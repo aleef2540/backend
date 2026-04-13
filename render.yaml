@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: entraining-fastapi
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_NAME
+        value: Entraining API
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: "false"
+      - key: ALLOWED_ORIGINS
+        value: https://your-php-domain.com
