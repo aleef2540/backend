@@ -1,9 +1,28 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
 from app.schemas import ChatRequest, ChatResponse, ChatState
 from app.state_store import chat_state_store
 from app.services.chat_flow import process_chat
 
 app = FastAPI(title="Entraining Chat API")
+
+origins = [
+    "https://www.entraining.net",
+    "https://entraining.net",
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -16,15 +35,12 @@ async def chat(req: ChatRequest):
     if not req.user_message or not req.user_message.strip():
         raise HTTPException(status_code=400, detail="user_message is required")
 
-    # ถ้ามี state ส่งมาใน request ให้ใช้ state นั้นก่อน
     if req.state:
         state = req.state
     else:
         state = chat_state_store.get_state(req.web_no, req.member_no)
 
     result = await process_chat(req, state)
-
-    # เก็บ state ล่าสุดกลับเข้า store
     chat_state_store.set_state(req.web_no, req.member_no, result.state)
 
     return result
