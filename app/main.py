@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.schemas import ChatRequest, ChatResponse, ChatState
 from app.state_store import chat_state_store
 from app.services.chat_flow import process_chat
+from app.services.ai_service import detect_intent
 
 app = FastAPI(title="Entraining Chat API")
 
@@ -29,21 +30,48 @@ app.add_middleware(
 async def health():
     return {"status": "ok"}
 
+@app.post("/detect-intent")
+async def detect_intent_route(req: ChatRequest):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    result = await detect_intent(req.user_message)
+    return result
+
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     if not req.user_message or not req.user_message.strip():
         raise HTTPException(status_code=400, detail="user_message is required")
 
-    if req.state:
-        state = req.state
-    else:
-        state = chat_state_store.get_state(req.web_no, req.member_no)
+    # if req.state:
+    #     state = req.state
+    # else:
+    #     state = chat_state_store.get_state(req.web_no, req.member_no)
 
-    result = await process_chat(req, state)
-    chat_state_store.set_state(req.web_no, req.member_no, result.state)
+    # result = await process_chat(req, state)
+    # chat_state_store.set_state(req.web_no, req.member_no, result.state)
 
-    return result
+    # return result
+
+    state = req.state or ChatState()
+
+    return ChatResponse(
+        reply=(
+            f"รับค่าแล้ว | "
+            f"user_message={req.user_message} | "
+            f"web_no={req.web_no} | "
+            f"member_no={req.member_no}"
+        ),
+        state=state,
+        source="echo_test",
+        debug={
+            "received_user_message": req.user_message,
+            "received_web_no": req.web_no,
+            "received_member_no": req.member_no,
+            "received_state": state.model_dump(),
+        },
+    )
 
 
 @app.post("/chat/reset")
