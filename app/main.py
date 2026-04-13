@@ -1,30 +1,36 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
+from app.schemas import ChatRequest, ChatResponse, ChatState
+from app.state_store import chat_state_store
+from app.services.chat_flow import process_chat
 
-from app.config import get_settings
-from app.routers.health import router as health_router
-
-settings = get_settings()
-
-app = FastAPI(
-    title=settings.app_name,
-    debug=settings.app_debug,
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins_list(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.include_router(health_router, prefix=settings.api_prefix)
+app = FastAPI(title="Entraining Chat API")
 
 
-@app.get("/")
-def root():
-    return {
-        "message": "FastAPI is running",
-        "env": settings.app_env,
-    }
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    # ถ้ามี state ส่งมาใน request ให้ใช้ state นั้นก่อน
+    if req.state:
+        state = req.state
+    else:
+        state = chat_state_store.get_state(req.web_no, req.member_no)
+
+    result = await process_chat(req, state)
+
+    # เก็บ state ล่าสุดกลับเข้า store
+    chat_state_store.set_state(req.web_no, req.member_no, result.state)
+
+    return result
+
+
+@app.post("/chat/reset")
+async def reset_chat(web_no: int | None = None, member_no: int | None = None):
+    state = chat_state_store.reset_state(web_no, member_no)
+    return {"status": "ok", "state": state}
