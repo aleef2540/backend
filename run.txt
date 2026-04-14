@@ -1,1 +1,26 @@
+pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+2. filter (สำคัญมาก)
+from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+results = qdrant.search(
+    collection_name=QDRANT_COLLECTION,
+    query_vector=query_vector,
+    limit=5,
+    with_payload=True,
+    query_filter=Filter(
+        must=[
+            FieldCondition(
+                key="course_name",
+                match=MatchValue(value="Leadership")
+            )
+        ]
+    )
+)
+
+👉 ใช้ filter ข้อมูล เช่น:
+
+course
+category
+language

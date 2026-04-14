@@ -1,29 +1,25 @@
-from typing import Dict
 from app.schemas import ChatState
 
-
-class InMemoryChatStateStore:
+class ChatStateStore:
     def __init__(self):
-        self._store: Dict[str, ChatState] = {}
+        self._store = {}
 
     def _make_key(self, web_no: int | None, member_no: int | None) -> str:
-        return f"{web_no or 0}:{member_no or 0}"
+        web_no = web_no or 0
+        member_no = member_no or 0
+        return f"web_{web_no}_member_{member_no}"
 
     def get_state(self, web_no: int | None, member_no: int | None) -> ChatState:
         key = self._make_key(web_no, member_no)
-        if key not in self._store:
-            self._store[key] = ChatState()
-        return self._store[key]
+        return self._store.get(key, ChatState())
 
-    def set_state(self, web_no: int | None, member_no: int | None, state: ChatState) -> ChatState:
+    def set_state(self, web_no: int | None, member_no: int | None, state: ChatState):
         key = self._make_key(web_no, member_no)
         self._store[key] = state
-        return state
 
     def reset_state(self, web_no: int | None, member_no: int | None) -> ChatState:
-        state = ChatState()
-        self.set_state(web_no, member_no, state)
-        return state
+        key = self._make_key(web_no, member_no)
+        self._store[key] = ChatState()
+        return self._store[key]
 
-
-chat_state_store = InMemoryChatStateStore()
+chat_state_store = ChatStateStore()

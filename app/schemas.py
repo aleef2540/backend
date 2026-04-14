@@ -32,8 +32,19 @@ class LearningProgressOutput(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    state: ChatState
-    intent: Optional[str] = None
-    topic: Optional[str] = None
-    learning_need: Optional[str] = None
+    state: Optional[ChatState] = None
     source: Optional[str] = None
+
+class IntentResult(BaseModel):
+    intent: str
+
+class LearningProgress(BaseModel):
+    topic: str
+    learning_need: str
+    last_question: str
+    next_action: str
+    raw: str
+
+class ResetRequest(BaseModel):
+    web_no: int
+    member_no: int
