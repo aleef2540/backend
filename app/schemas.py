@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 class ChatState(BaseModel):
     mode: Literal["idle", "learning"] = "idle"
     topic: str = "unknown"
+    competency: str = "unknown"
+    consulting_type: str = "unknown"
     learning_need: str = "unknown"
     last_question: str = "none"
     last_question_type: str = "none"
@@ -40,6 +42,8 @@ class IntentResult(BaseModel):
 
 class LearningProgress(BaseModel):
     topic: str
+    competency: str
+    consulting_type: str
     learning_need: str
     last_question: str
     next_action: str

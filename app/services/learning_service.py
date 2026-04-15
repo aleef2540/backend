@@ -22,6 +22,8 @@ from app.services.ai_service import call_openai_chat
 async def analyze_learning_progress(user_message: str, state: ChatState, model: str = "gpt-4.1-mini"):
     current_topic = str(state.topic or "unknown").strip()
     current_learning_need = str(state.learning_need or "unknown").strip()
+    current_competency = str(state.learning_need or "unknown").strip()
+    current_consulting_type = str(state.consulting_type or "unknown").strip()
     last_question = str(state.last_question or "none").strip()
 
     system_prompt = f"""        คุณคือ AI ที่สรุปข้อมูลการเรียนรู้จากข้อความผู้ใช้
@@ -30,6 +32,8 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
         บริบท
         =====================
         - topic ปัจจุบัน: {current_topic}
+        - competency ปัจจุบัน: {current_competency}
+        - consulting_type ปัจจุบัน: {current_consulting_type}
         - learning_need ปัจจุบัน: {current_learning_need}
         - last_question: {last_question}
 
@@ -39,7 +43,8 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
         วิเคราะห์ "ข้อความล่าสุดของผู้ใช้" แล้วสรุป:
 
         1. topic = หัวข้อที่ผู้ใช้พูดถึงอย่างชัดเจน
-        2. learning_need = สิ่งที่ผู้ใช้อยากรู้เกี่ยวกับ topic
+        2. competency = ทักษะหลักที่เกี่ยวข้องกับ topic
+        3. learning_need = สิ่งที่ผู้ใช้อยากรู้เกี่ยวกับ topic หรือสิ่งที่อยากพัฒนา
 
         =====================
         ค่าที่อนุญาตสำหรับ learning_need
@@ -51,6 +56,85 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
         - มีอะไรบ้าง
         - ต้องทำอย่างไร
         - unknown
+
+        =====================
+        ค่าที่อนุญาตสำหรับ competency
+        =====================
+        - Presentation Skill
+        - Communication Skill
+        - Time Management
+        - Self Confidence
+        - Analytical Thinking
+        - Strategic Thinking
+        - Teamwork
+        - Leadership
+        - Problem Solving
+        - Decision Making
+        - unknown
+        =====================
+        กฎการวิเคราะห์ competency
+        =====================
+        1. competency คือ "ทักษะหลัก" ที่เกี่ยวข้องกับ topic
+        - ไม่ใช่การคัดลอก topic มาตอบตรง ๆ
+        - ไม่ใช่ประโยคยาว
+        - ให้เลือกจากค่าที่อนุญาตเท่านั้น
+
+        2. หากยังไม่สามารถระบุทักษะหลักได้ชัดเจน → ให้ตอบ "unknown"
+
+        3. แนวทางการจับ competency
+        - ถ้าเกี่ยวกับการพูดต่อหน้าคน, การพูดในที่ประชุม, การนำเสนอ
+        → Presentation Skill
+        - ถ้าเกี่ยวกับการสื่อสาร, การอธิบาย, การคุยให้คนเข้าใจ, การสื่อสารกับผู้อื่น
+        → Communication Skill
+        - ถ้าเกี่ยวกับงานล้น, การจัดลำดับงาน, การคุมเวลา, การบริหารเวลา
+        → Time Management
+        - ถ้าเกี่ยวกับความกลัว, ไม่มั่นใจ, ไม่กล้าแสดงออก
+        → Self Confidence
+        - ถ้าเกี่ยวกับการคิดวิเคราะห์, การแยกแยะข้อมูล, การหาสาเหตุ
+        → Analytical Thinking
+        - ถ้าเกี่ยวกับการคิดระยะยาว, การมองภาพรวม, การวางแผนเชิงอนาคต
+        → Strategic Thinking
+        - ถ้าเกี่ยวกับการทำงานร่วมกัน, การประสานงาน, การทำงานเป็นทีม
+        → Teamwork
+        - ถ้าเกี่ยวกับการนำทีม, การดูแลทีม, การบริหารคน
+        → Leadership
+        - ถ้าเกี่ยวกับการแก้ปัญหา, การรับมือสถานการณ์, การหาทางออก
+        → Problem Solving
+        - ถ้าเกี่ยวกับการตัดสินใจ, การเลือกแนวทาง, การชั่งน้ำหนักทางเลือก
+        → Decision Making
+
+        4. ถ้า topic เป็นเรื่องกว้างมาก หรือยังไม่ชัด
+        → competency = "unknown"
+
+        =====================
+        ค่าที่อนุญาตสำหรับ consulting_type
+        =====================
+        - problem
+        - emotion
+        - skill
+        - situation
+        - case
+        - unknown
+        =====================
+        กฎการวิเคราะห์ consulting_type
+        =====================
+
+        - ถ้า user แสดงความรู้สึก เช่น ไม่มั่นใจ เครียด กังวล กลัว
+        → emotion
+
+        - ถ้า user มีปัญหา เช่น ทำไม่ได้ งานล้น แก้ไม่ได้
+        → problem
+
+        - ถ้า user บอกว่าอยากพัฒนา อยากเก่งขึ้น
+        → skill
+
+        - ถ้า user ถามวิธีรับมือสถานการณ์
+        → situation
+
+        - ถ้า user ขอแนวทาง ตัวอย่าง
+        → case
+
+        - ถ้าไม่แน่ใจ → unknown
 
         =====================
         กฎการเก็บเป้าหมาย (Outcome) เพิ่มเติม
@@ -75,6 +159,9 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
         → ให้ learning_need = "ต้องทำอย่างไร"
 
         - ห้ามตอบว่า unknown ในกรณีนี้
+
+        
+        
 
         =====================
         กฎสำคัญ (ต้องทำตามอย่างเคร่งครัด)
@@ -108,31 +195,43 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
         ผู้ใช้: "กังวลเรื่องงาน"
         {{
         "topic": "ความกังวลเรื่องงาน",
+        "competency": "unknown",
         "learning_need": "unknown"
         }}
 
         ผู้ใช้: "ไม่มั่นใจเวลาพูดในที่ประชุม"
         {{
         "topic": "ความไม่มั่นใจในการพูดในที่ประชุม",
+        "competency": "Presentation Skill",
         "learning_need": "unknown"
         }}
 
         ผู้ใช้: "การสื่อสารที่ดีคืออะไร"
         {{
         "topic": "การสื่อสาร",
+        "competency": "Communication Skill",
         "learning_need": "คืออะไร"
         }}
 
         ผู้ใช้: "อยากพัฒนาการพูด ควรทำอย่างไร"
         {{
         "topic": "การพัฒนาการพูด",
+        "competency": "Presentation Skill",
         "learning_need": "ต้องทำอย่างไร"
         }}
 
         ผู้ใช้: "สวัสดีฉันอยากพัฒนาตนเอง"
         {{
         "topic": "unknown",
+        "competency": "unknown",
         "learning_need": "ต้องทำอย่างไร"
+        }}
+
+        ผู้ใช้: "อยากจัดการเวลาให้ดีขึ้น"
+        {{
+        "topic": "การจัดการเวลา",
+        "competency": "Time Management",
+        "learning_need": "ต้องทำอย่างไรเพื่อให้จัดการเวลาได้ดีขึ้น"
         }}
 
         =====================
@@ -142,6 +241,8 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
 
         {{
         "topic": "string",
+        "competency": "string",
+        "consulting_type": "string",
         "learning_need": "string"
         }}"""
 
@@ -162,13 +263,21 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
 
     topic = decoded.get("topic", "unknown")
     learning_need = decoded.get("learning_need", "unknown")
+    competency = decoded.get("competency", "unknown")
+    consulting_type = decoded.get("consulting_type", "unknown")
 
     # merge state (สำคัญ!)
     if topic == "unknown":
         topic = current_topic
 
+    if competency == "unknown":
+        competency = current_competency
+
     if learning_need == "unknown":
         learning_need = current_learning_need
+
+    if consulting_type == "unknown":
+        consulting_type = current_consulting_type
 
     # derive next_action
     if topic == "unknown":
@@ -180,6 +289,8 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
 
     return LearningProgress(
     topic=topic,
+    competency=competency,
+    consulting_type=consulting_type,
     learning_need=learning_need,
     last_question=last_question,
     next_action=next_action,
@@ -303,11 +414,11 @@ async def generate_learning_question(
 
     return (content or "ช่วยเล่าเพิ่มเติมอีกนิดได้ไหมครับ").strip()
 
-def build_query_text_by_ai(topic: str, learning_need: str) -> dict:
+def build_query_text_by_ai(topic: str, competency: str, learning_need: str) -> dict:
     system = """คุณคือ AI ที่ช่วยสร้าง query text สำหรับใช้ค้นหาข้อมูลใน vector database
 
     กติกา:
-    - รับ topic และ learning_need
+    - รับ topic, competency และ learning_need
     - สร้างข้อความค้นหา 1 ย่อหน้าสั้น ๆ
     - เน้น keyword สำคัญที่เกี่ยวกับหัวข้อและความต้องการเรียนรู้
     - ไม่ต้องตอบยาว
@@ -316,6 +427,7 @@ def build_query_text_by_ai(topic: str, learning_need: str) -> dict:
 
     user = (
         f"topic: {topic}\n"
+        f"competency: {competency}\n"
         f"learning_need: {learning_need}\n\n"
         "ช่วยสร้าง query text สำหรับค้นหา knowledge ที่เกี่ยวข้อง"
     )
@@ -537,6 +649,7 @@ def build_followup_topics(results: list[dict], limit: int = 2) -> list[str]:
 def generate_final_learning_reply(
     user_message: str,
     topic: str,
+    competency: str,
     learning_need: str,
     query_text: str,
     context: str,
@@ -561,6 +674,7 @@ def generate_final_learning_reply(
     user = f"""คำถามผู้ใช้: {user_message}
 
 Topic: {topic}
+competency: {competency}
 Learning Need: {learning_need}
 Query Text ที่ใช้ค้นหา: {query_text}
 
@@ -570,7 +684,7 @@ Context สำหรับใช้ตอบคำถามหลัก:
 Topic ที่เกี่ยวข้อง (ใช้เฉพาะสำหรับชวนคุยต่อท้ายคำตอบ ไม่ใช้เป็นข้อมูลหลัก):
 {follow}
 
-ช่วยตอบผู้ใช้โดยสรุปสาระสำคัญจาก Context ให้เป็นธรรมชาติ"""
+ช่วยตอบผู้ใช้โดยให้อธิบายว่าสิ่งที่ผู้ใช้กำลังติดอยู่คือ competency ด้านใด ลักษะไหนที่ผู้ใช้ติดอยู่ แล้วค่อยแนะนำวิธีแก้ปัญหาโดยสรุปสาระสำคัญจาก Context ให้เป็นธรรมชาติไม่ให้เหมือนโปรแกรมให้เหมือนโค้ชคุยมากกว่า"""
 
     try:
         response = client.chat.completions.create(
@@ -599,11 +713,12 @@ def answer_when_learning_data_complete(
     conn,
     user_message: str,
     topic: str,
+    competency: str,
     learning_need: str,
 ) -> dict:
     
     # 1) ให้ AI สร้าง query text
-    q = build_query_text_by_ai(topic, learning_need)
+    q = build_query_text_by_ai(topic, competency, learning_need)
     if not q["ok"]:
         return {
             "ok": False,
@@ -652,6 +767,7 @@ def answer_when_learning_data_complete(
     final = generate_final_learning_reply(
         user_message=user_message,
         topic=topic,
+        competency=competency,
         learning_need=learning_need,
         query_text=query_text,
         context=context,

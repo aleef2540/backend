@@ -22,6 +22,8 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
         progress = await analyze_learning_progress(user_message, state)
 
         topic = progress.topic
+        competency = progress.competency
+        consulting_type = progress.consulting_type
         learning_need = progress.learning_need
         last_question = progress.last_question
         next_action = progress.next_action
@@ -29,6 +31,8 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
         new_state = ChatState(
             mode="learning",
             topic=topic,
+            consulting_type=consulting_type,
+            competency=competency,
             learning_need=learning_need,
             last_question=last_question,
             last_question_type="none",
@@ -49,6 +53,7 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
                 conn=conn,
                 user_message=user_message,
                 topic=topic,
+                competency=competency,
                 learning_need=learning_need,
             )
             reply = ans["reply"]
@@ -89,6 +94,8 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
     progress = await analyze_learning_progress(user_message, state)
 
     topic = progress.topic
+    competency = progress.competency
+    consulting_type = progress.consulting_type
     learning_need = progress.learning_need
     last_question = progress.last_question
     next_action = progress.next_action
@@ -96,6 +103,8 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
     new_state = ChatState(
         mode="learning",
         topic=topic,
+        consulting_type=consulting_type,
+        competency=competency,
         learning_need=learning_need,
         last_question=last_question,
         last_question_type="none",
@@ -116,6 +125,7 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
             conn=conn,
             user_message=user_message,
             topic=topic,
+            competency=competency,
             learning_need=learning_need,
         )
         reply = ans["reply"]
