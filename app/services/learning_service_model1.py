@@ -6,6 +6,7 @@ import re
 import requests
 from openai import OpenAI
 from qdrant_client import QdrantClient
+from typing import Any
 
 qdrant = QdrantClient(
     url="https://f9a8611d-3692-4b14-bd09-bfaa135fe05d.us-east-1-1.aws.cloud.qdrant.io",
@@ -19,103 +20,243 @@ from app.schemas_model1 import ChatState, LearningProgress
 from app.services.ai_service import call_openai_chat
 
 
-async def analyze_learning_progress(user_message: str, state: ChatState, model: str = "gpt-4.1-mini"):
-    current_topic = str(state.topic or "unknown").strip()
-    current_goal = str(state.goal or "unknown").strip()
-    current_event = str(state.event or "unknown").strip()
-    last_question = str(state.last_question or "none").strip()
+async def analyze_learning_progress(
+    user_message: str,
+    state: ChatState,
+    model: str = "gpt-4.1-mini"
+) -> LearningProgress:
+    current_topic = str(getattr(state, "topic", "unknown") or "unknown").strip()
+    current_goal = str(getattr(state, "goal", "unknown") or "unknown").strip()
+    current_event = str(getattr(state, "event", "unknown") or "unknown").strip()
+    current_learning_need = str(getattr(state, "learning_need", "unknown") or "unknown").strip()
+    last_question = str(getattr(state, "last_question", "none") or "none").strip()
+
+    def normalize_text(value: Any) -> str:
+        if value is None:
+            return "unknown"
+        value = str(value).strip()
+        if not value:
+            return "unknown"
+
+        lowered = value.lower()
+        if lowered in {"unknown", "null", "none", "n/a", "-", "--"}:
+            return "unknown"
+
+        return value
+
+    def extract_json_object(text: str) -> dict:
+        if not text or not text.strip():
+            return {}
+
+        cleaned = re.sub(r"```json|```", "", text, flags=re.IGNORECASE).strip()
+
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            pass
+
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            possible_json = match.group(0)
+            try:
+                return json.loads(possible_json)
+            except Exception:
+                return {}
+
+        return {}
 
     system_prompt = f"""
-            คุณคือ AI ที่สรุปข้อมูลการเรียนรู้จากข้อความผู้ใช้
+        คุณคือ AI ที่ทำหน้าที่สกัดข้อมูลการเรียนรู้จาก "ข้อความล่าสุดของผู้ใช้"
+        ให้แยกข้อมูลออกเป็น 4 ช่องคือ topic, goal, event, learning_need
 
-            =====================
-            บริบท
-            =====================
-            - topic ปัจจุบัน: {current_topic}
-            - goal ปัจจุบัน: {current_goal}
-            - event ปัจจุบัน: {current_event}
-            - last_question: {last_question}
+        =====================
+        บริบทปัจจุบัน
+        =====================
+        - topic ปัจจุบัน: {current_topic}
+        - goal ปัจจุบัน: {current_goal}
+        - event ปัจจุบัน: {current_event}
+        - learning_need ปัจจุบัน: {current_learning_need}
+        - last_question: {last_question}
 
-            =====================
-            หน้าที่
-            =====================
-            วิเคราะห์ "ข้อความล่าสุดของผู้ใช้" แล้วสรุป:
+        =====================
+        ความหมายของแต่ละ field
+        =====================
+        1. topic
+        = หัวข้อหลักที่ผู้ใช้กำลังพูดถึง
+        = ตอบคำถามว่า "ผู้ใช้กำลังพูดเรื่องอะไร"
 
-            1. topic = หัวข้อที่ผู้ใช้พูดถึงอย่างชัดเจน
-            2. goal = สิ่งที่ผู้ใช้อยากทำให้ดีขึ้น / ผลลัพธ์ที่อยากได้
-            3. event = สถานการณ์ / บริบท / เหตุการณ์ที่ผู้ใช้จะนำไปใช้
+        2. goal
+        = สิ่งที่ผู้ใช้อยากทำให้ดีขึ้น / ผลลัพธ์ที่อยากได้
+        = ตอบคำถามว่า "ผู้ใช้อยากไปถึงอะไร"
 
-            =====================
-            กฎการแยก goal และ event
-            =====================
-            - goal = ตอบว่า "อยากทำอะไรให้ดีขึ้น"
-            - event = ตอบว่า "เรื่องนั้นเกิดขึ้นที่ไหน / ตอนอะไร / ในสถานการณ์ใด"
+        3. event
+        = สถานการณ์ / บริบท / เหตุการณ์ที่ผู้ใช้กำลังเจอ หรือจะต้องนำเรื่องนี้ไปใช้
+        = ตอบคำถามว่า "เรื่องนี้เกิดขึ้นเมื่อไร / ที่ไหน / ในสถานการณ์ใด"
 
-            - ถ้าประโยคมีทั้ง "สิ่งที่อยากพัฒนา" และ "บริบท"
-            ให้แยกออกจากกันเสมอ
+        4. learning_need
+        = สิ่งที่ผู้ใช้อยากรู้ / อยากได้คำแนะนำ / อยากให้ช่วย ณ ตอนนี้
+        = ตอบคำถามว่า "ตอนนี้ผู้ใช้อยากให้ช่วยเรื่องอะไร"
 
-            ตัวอย่าง:
-            - "อยากพูดในที่ประชุมได้ดีขึ้น"
-            -> goal = "พูดได้ดีขึ้น"
-            -> event = "ในที่ประชุม"
+        =====================
+        กฎการแยก field
+        =====================
+        - ข้อความเดียวอาจมีมากกว่า 1 field ได้
+        - ให้ดึงทุก field ที่พบ
+        - ถ้า field ไหนไม่ชัดเจนจริง ๆ ให้ตอบ "unknown"
+        - ห้ามเดาข้อมูลใหม่ที่ผู้ใช้ไม่ได้สื่อ
+        - แต่อนุญาตให้ "สรุปถ้อยคำ" จากสิ่งที่ผู้ใช้พูดได้ โดยห้ามเพิ่มความหมายใหม่เกินข้อความ
 
-            - "อยากตอบคำถามลูกค้าให้มั่นใจขึ้นตอนพรีเซนต์งาน"
-            -> goal = "ตอบคำถามลูกค้าให้มั่นใจขึ้น"
-            -> event = "ตอนพรีเซนต์งาน"
+        =====================
+        กฎสำคัญเรื่อง goal
+        =====================
+        - goal = ผลลัพธ์ที่ผู้ใช้อยากได้
+        - ถ้าผู้ใช้เล่าปัญหาอย่างเดียว แต่ไม่ได้บอกผลลัพธ์ที่ต้องการชัดเจน
+        ให้ตอบ goal = "unknown"
 
-            - "ไม่มั่นใจเวลา present งานต่อผู้บริหาร"
-            -> goal = "unknown"
-            -> event = "present งานต่อผู้บริหาร"
+        ตัวอย่าง:
+        - "อยากพูดในที่ประชุมได้ดีขึ้น"
+        -> goal = "พูดในที่ประชุมได้ดีขึ้น"
 
-            =====================
-            กฎสำคัญ
-            =====================
-            1. ห้ามเดาข้อมูลใหม่
-            2. ถ้าผู้ใช้เล่าปัญหาอย่างเดียว และไม่ได้บอกผลลัพธ์ที่ต้องการชัดเจน
-            -> goal = "unknown"
-            3. ถ้าไม่แน่ใจ -> ตอบ "unknown"
-            4. topic ถ้าไม่ชัด -> "unknown"
+        - "ไม่มั่นใจเวลา present งานต่อผู้บริหาร"
+        -> goal = "unknown"
 
-            =====================
-            รูปแบบคำตอบ
-            =====================
-            ตอบเป็น JSON เท่านั้น:
+        =====================
+        กฎสำคัญเรื่อง event
+        =====================
+        - event = สถานการณ์หรือบริบทที่เรื่องนี้เกิดขึ้น
+        - มักมีคำบอกเวลา / สถานที่ / โอกาส / สถานการณ์ เช่น
+        "พรุ่งนี้", "ตอนประชุม", "เวลา present", "กับลูกค้า", "ต่อหน้าผู้บริหาร"
 
-            {{
-            "topic": "string",
-            "goal": "string",
-            "event": "string"
-            }}
-            """
+        ตัวอย่าง:
+        - "อยากตอบคำถามลูกค้าให้มั่นใจขึ้นตอนพรีเซนต์งาน"
+        -> event = "ตอนพรีเซนต์งาน"
 
-    user_prompt = "ข้อความผู้ใช้: " + user_message
+        - "พรุ่งนี้ต้อง present ต่อหน้าผู้บริหาร"
+        -> event = "พรุ่งนี้ต้อง present ต่อหน้าผู้บริหาร"
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.1,
-    )
+        =====================
+        กฎสำคัญเรื่อง learning_need
+        =====================
+        - learning_need จะต้องเป็นสิ่งที่ผู้ใช้อยากรู้หรืออยากให้ช่วยในเรื่องที่ "เฉพาะเจาะจงพอ"
+        - ถ้าเป็นเพียงคำพูดกว้าง ๆ เช่น
+        "มีเรื่องจะปรึกษา", "ขอคำแนะนำ", "ช่วยหน่อย", "มีคำถาม"
+        แต่ยังไม่บอกว่าปรึกษาเรื่องอะไร
+        ให้ตอบ learning_need = "unknown"
+        - ถ้าไม่มีคำขอชัดเจน ให้ตอบ "unknown"
 
-    text = response.choices[0].message.content or ""
-    text = re.sub(r"```json|```", "", text)
-    decoded = json.loads(text.strip()) if text.strip() else {}
+        ตัวอย่าง:
+        - "อยากรู้ว่าจะเริ่มพูดยังไง"
+        -> learning_need = "อยากรู้ว่าจะเริ่มพูดยังไง"
 
-    topic = decoded.get("topic", "unknown")
-    goal = decoded.get("goal", "unknown")
-    event = decoded.get("event", "unknown")
+        - "ควรเริ่มพัฒนาจากตรงไหน"
+        -> learning_need = "ควรเริ่มพัฒนาจากตรงไหน"
 
-    # merge state (สำคัญ!)
+        - "มีเรื่องจะปรึกษา"
+        -> learning_need = "unknown"
+
+        =====================
+        กฎสำคัญเรื่อง topic
+        =====================
+        - topic = ชื่อหัวข้อหลัก เช่น
+        "การพูดในที่ประชุม", "การให้ feedback", "การบริหารทีม", "การสื่อสารกับลูกค้า"
+        - ถ้าไม่ชัดจริง ๆ ให้ตอบ "unknown"
+
+        =====================
+        ตัวอย่าง
+        =====================
+        ข้อความ: "พรุ่งนี้ต้อง present งานต่อหน้าผู้บริหาร อยากพูดให้มั่นใจขึ้น แต่ยังไม่รู้จะเริ่มยังไง"
+        ตอบ:
+        {{
+        "topic": "การ present งานต่อหน้าผู้บริหาร",
+        "goal": "พูดให้มั่นใจขึ้น",
+        "event": "พรุ่งนี้ต้อง present งานต่อหน้าผู้บริหาร",
+        "learning_need": "ยังไม่รู้จะเริ่มยังไง"
+        }}
+
+        ข้อความ: "ช่วงนี้ทีมไม่ค่อยร่วมมือกัน ฉันอยากเป็นหัวหน้าที่บริหารทีมได้ดีขึ้น ควรเริ่มพัฒนาจากตรงไหน"
+        ตอบ:
+        {{
+        "topic": "การบริหารทีม",
+        "goal": "เป็นหัวหน้าที่บริหารทีมได้ดีขึ้น",
+        "event": "ช่วงนี้ทีมไม่ค่อยร่วมมือกัน",
+        "learning_need": "ควรเริ่มพัฒนาจากตรงไหน"
+        }}
+
+        ข้อความ: "ไม่มั่นใจเวลา present งานต่อผู้บริหาร"
+        ตอบ:
+        {{
+        "topic": "การ present งานต่อผู้บริหาร",
+        "goal": "unknown",
+        "event": "เวลา present งานต่อผู้บริหาร",
+        "learning_need": "unknown"
+        }}
+
+        =====================
+        รูปแบบคำตอบ
+        =====================
+        ตอบเป็น JSON object เท่านั้น
+        ห้ามมีคำอธิบายอื่น
+        ใช้ format นี้เท่านั้น:
+
+        {{
+        "topic": "string",
+        "goal": "string",
+        "event": "string",
+        "learning_need": "string"
+        }}
+        """.strip()
+
+    user_prompt = f"ข้อความล่าสุดของผู้ใช้: {user_message}"
+
+    try:
+        # ถ้าใช้ async client ให้ใช้ await แบบนี้
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.1,
+        )
+
+        text = response.choices[0].message.content or ""
+    except Exception as e:
+        raw_error = f"MODEL_CALL_ERROR: {str(e)}"
+        return LearningProgress(
+            topic=current_topic,
+            goal=current_goal,
+            event=current_event,
+            learning_need=current_learning_need,
+            last_question=last_question,
+            next_action=(
+                "ask_topic" if current_topic == "unknown"
+                else "ask_goal" if current_goal == "unknown"
+                else "ask_event" if current_event == "unknown"
+                else "ask_learning_need" if current_learning_need == "unknown"
+                else "ready"
+            ),
+            raw=raw_error,
+        )
+
+    decoded = extract_json_object(text)
+
+    topic = normalize_text(decoded.get("topic", "unknown"))
+    goal = normalize_text(decoded.get("goal", "unknown"))
+    event = normalize_text(decoded.get("event", "unknown"))
+    learning_need = normalize_text(decoded.get("learning_need", "unknown"))
+
+    # merge state
     if topic == "unknown":
-        topic = current_topic
+        topic = normalize_text(current_topic)
 
     if goal == "unknown":
-        goal = current_goal
+        goal = normalize_text(current_goal)
 
     if event == "unknown":
-        event = current_event
+        event = normalize_text(current_event)
+
+    if learning_need == "unknown":
+        learning_need = normalize_text(current_learning_need)
 
     # derive next_action
     if topic == "unknown":
@@ -124,18 +265,20 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
         next_action = "ask_goal"
     elif event == "unknown":
         next_action = "ask_event"
+    elif learning_need == "unknown":
+        next_action = "ask_learning_need"
     else:
         next_action = "ready"
 
     return LearningProgress(
-    topic=topic,
-    goal=goal,
-    event=event,
-    last_question=last_question,
-    next_action=next_action,
-    raw=text,
-)
-
+        topic=topic,
+        goal=goal,
+        event=event,
+        learning_need=learning_need,
+        last_question=last_question,
+        next_action=next_action,
+        raw=text,
+    )
 
 
 async def generate_learning_question(
@@ -143,23 +286,25 @@ async def generate_learning_question(
     state: ChatState,
     question_type: int,
     model: str = "gpt-4.1-mini",
-    ) -> str:
+) -> str:
     """
     question_type:
     1 = ask topic
     2 = ask goal
     3 = ask event
+    4 = ask learning_need
     """
 
     topic = str(state.topic or "unknown").strip()
     goal_value = str(state.goal or "unknown").strip()
     event = str(state.event or "unknown").strip()
+    learning_need = str(state.learning_need or "unknown").strip()
     last_question = str(state.last_question or "unknown").strip()
 
     if question_type == 1:
         missing_info = "ยังไม่รู้ว่าผู้ใช้อยากพัฒนาเรื่องอะไรเป็นหลัก"
         goal_instruction = (
-            "ถามต่ออย่างเป็นธรรมชาติเพื่อให้ผู้ใช้ระบุหัวข้อที่อยากพัฒนาให้ชัดเจนขึ้น "
+            "ถามต่ออย่างเป็นธรรมชาติ เพื่อให้ผู้ใช้ระบุหัวข้อที่อยากพัฒนาให้ชัดเจนขึ้น "
             "เช่น การสื่อสาร การบริหารเวลา การคิดวิเคราะห์ ภาวะผู้นำ หรือหัวข้ออื่นที่เฉพาะขึ้น"
         )
         question_focus = "topic"
@@ -167,16 +312,17 @@ async def generate_learning_question(
         ตัวอย่าง:
         ผู้ใช้: "อยากพูดในที่ประชุมได้ดีขึ้น"
         คำถามที่ดี:
-        "เข้าใจว่าคุณอยากพูดได้ดีขึ้นในที่ประชุมครับ แล้วอยากโฟกัสพัฒนาเรื่องอะไรเป็นหลัก เช่น การสื่อสารหรือความมั่นใจครับ"
+        "เข้าใจว่าคุณอยากพูดได้ดีขึ้นในที่ประชุมครับ แล้วถ้ามองให้ชัดขึ้น ตอนนี้คุณอยากโฟกัสพัฒนาเรื่องอะไรเป็นหลักครับ"
 
         ผู้ใช้: "ทำงานช้าตลอด"
         คำถามที่ดี:
-        "จากที่คุณเล่ามา ตอนนี้คุณอยากพัฒนาเรื่องอะไรเป็นหลักครับ เป็นเรื่องการบริหารเวลาหรือการจัดลำดับงานครับ"
+        "จากที่คุณเล่ามา ผมอยากเข้าใจให้ชัดขึ้นอีกนิดครับ ว่าตอนนี้คุณอยากพัฒนาเรื่องอะไรเป็นหลัก เช่น การบริหารเวลา การจัดลำดับงาน หรือเรื่องอื่นที่คุณรู้สึกติดอยู่ครับ"
         """
+
     elif question_type == 2:
         missing_info = "รู้หัวข้อแล้ว แต่ยังไม่รู้ว่าผู้ใช้อยากให้ตัวเองทำอะไรได้ดีขึ้น"
         goal_instruction = (
-            "ถามต่ออย่างเป็นธรรมชาติเพื่อให้ผู้ใช้ระบุผลลัพธ์ที่คาดหวังหรือสิ่งที่อยากทำได้ดีขึ้น "
+            "ถามต่ออย่างเป็นธรรมชาติ เพื่อให้ผู้ใช้ระบุผลลัพธ์ที่คาดหวังหรือสิ่งที่อยากทำได้ดีขึ้น "
             "โดยถามในมุมว่าอยากให้ตัวเองทำอะไรดีขึ้น ไม่ใช่ถามหัวข้อซ้ำ"
         )
         question_focus = "goal"
@@ -184,16 +330,17 @@ async def generate_learning_question(
         ตัวอย่าง:
         ผู้ใช้: "อยากพัฒนาการสื่อสาร"
         คำถามที่ดี:
-        "ถ้าเป็นเรื่องการสื่อสาร คุณอยากให้ตัวเองทำอะไรได้ดีขึ้นครับ"
+        "ถ้าเป็นเรื่องการสื่อสาร ผมอยากรู้เพิ่มอีกนิดครับว่าคุณอยากให้ตัวเองทำอะไรได้ดีขึ้นเป็นพิเศษ"
 
         ผู้ใช้: "อยากพัฒนาเรื่องการบริหารเวลา"
         คำถามที่ดี:
-        "ถ้าเป็นเรื่องการบริหารเวลา คุณอยากให้ตัวเองทำอะไรได้ดีขึ้นครับ เช่น ทำงานให้เสร็จเร็วขึ้นหรือจัดลำดับงานได้ชัดขึ้น"
+        "ถ้าเป็นเรื่องการบริหารเวลา ตอนนี้คุณอยากให้ตัวเองทำอะไรได้ดีขึ้นครับ เช่น ทำงานให้เสร็จเร็วขึ้น จัดลำดับงานได้ชัดขึ้น หรือคุมเวลาในแต่ละวันได้ดีขึ้น"
         """
+
     elif question_type == 3:
         missing_info = "รู้หัวข้อและเป้าหมายแล้ว แต่ยังไม่รู้ว่าจะนำไปใช้ในสถานการณ์ไหน"
         goal_instruction = (
-            "ถามต่ออย่างเป็นธรรมชาติเพื่อให้ผู้ใช้ระบุสถานการณ์ บริบท หรือเหตุการณ์ที่เจออยู่ "
+            "ถามต่ออย่างเป็นธรรมชาติ เพื่อให้ผู้ใช้ระบุสถานการณ์ บริบท หรือเหตุการณ์ที่เจออยู่ "
             "เช่น ตอนประชุม ตอนคุยกับหัวหน้า ตอนพรีเซนต์งาน ตอนคุยกับลูกค้า หรือระหว่างทำงานจริง"
         )
         question_focus = "event"
@@ -201,12 +348,32 @@ async def generate_learning_question(
         ตัวอย่าง:
         ผู้ใช้: "อยากสื่อสารให้ชัดขึ้น"
         คำถามที่ดี:
-        "เรื่องนี้คุณอยากเอาไปใช้ในสถานการณ์ไหนเป็นหลักครับ เช่น ตอนประชุมหรือเวลาคุยกับทีม"
+        "เรื่องนี้คุณอยากเอาไปใช้ในสถานการณ์ไหนเป็นหลักครับ เพื่อที่ผมจะได้ช่วยได้ตรงมากขึ้น"
 
         ผู้ใช้: "อยากจัดลำดับงานให้ดีขึ้น"
         คำถามที่ดี:
-        "เรื่องนี้มักเกิดขึ้นในสถานการณ์ไหนครับ เช่น ตอนงานเข้าพร้อมกันหรือเวลาต้องรีบส่งงาน"
+        "ปัญหานี้มักเกิดขึ้นในช่วงไหนของการทำงานครับ เช่น ตอนงานเข้าพร้อมกัน ตอนต้องเร่งส่งงาน หรือในสถานการณ์อื่นที่คุณเจอบ่อย ๆ"
         """
+
+    elif question_type == 4:
+        missing_info = "รู้เรื่องที่อยากพัฒนาแล้ว แต่ยังไม่ชัดว่าตอนนี้ผู้ใช้อยากให้ช่วยเรื่องอะไรโดยตรง"
+        goal_instruction = (
+            "ถามต่ออย่างเป็นธรรมชาติ เพื่อให้ผู้ใช้ระบุสิ่งที่อยากรู้ อยากได้คำแนะนำ "
+            "หรืออยากให้ช่วย ณ ตอนนี้ เช่น อยากเริ่มยังไง ควรทำแบบไหนก่อน "
+            "อยากได้แนวทาง วิธีคิด วิธีรับมือ หรือขั้นตอนที่นำไปใช้ได้จริง"
+        )
+        question_focus = "learning_need"
+        examples = """
+        ตัวอย่าง:
+        ผู้ใช้: "อยากพัฒนาการสื่อสารกับทีม"
+        คำถามที่ดี:
+        "ได้เลยครับ ถ้าเป็นเรื่องการสื่อสารกับทีม ตอนนี้คุณอยากให้ผมช่วยในมุมไหนมากที่สุดครับ เช่น อยากรู้ว่าควรเริ่มปรับตรงไหนก่อน หรืออยากได้วิธีที่เอาไปใช้ได้เลย"
+
+        ผู้ใช้: "พรุ่งนี้ต้อง present งานต่อผู้บริหาร"
+        คำถามที่ดี:
+        "เข้าใจเลยครับ ถ้าเป็นสถานการณ์นี้ ตอนนี้คุณอยากได้ความช่วยเหลือเรื่องไหนมากที่สุดครับ เช่น วิธีเริ่มพูด วิธีเรียบเรียงเนื้อหา หรือวิธีรับมือความตื่นเต้น"
+        """
+
     else:
         return "ช่วยเล่าเพิ่มเติมอีกนิดได้ไหมครับ"
 
@@ -223,6 +390,7 @@ async def generate_learning_question(
         - topic: {topic}
         - goal: {goal_value}
         - event: {event}
+        - learning_need: {learning_need}
         - สิ่งที่ยังขาด: {missing_info}
         - เป้าหมายของคำถามนี้: {goal_instruction}
         - focus ที่ต้องถาม: {question_focus}
@@ -232,18 +400,21 @@ async def generate_learning_question(
         2. ห้ามถามหลายประเด็นในประโยคเดียว
         3. ห้ามถามซ้ำสิ่งที่มีอยู่แล้ว
         4. ถ้าผู้ใช้พูดมาบางส่วนแล้ว ให้เชื่อมจากสิ่งที่ผู้ใช้พูดก่อน แล้วค่อยถามสิ่งที่ยังขาด
-        5. ใช้ภาษาธรรมชาติ อบอุ่น คุยง่าย
+        5. ใช้ภาษาธรรมชาติ อบอุ่น คุยง่าย และเป็นกันเอง
         6. คำถามควรช่วยให้ผู้ใช้ตอบต่อได้ง่าย
         7. สามารถยกตัวอย่างสั้น ๆ ได้ ถ้าช่วยให้ตอบง่ายขึ้น
         8. ห้ามสรุปหรือเดาเกินจากที่ผู้ใช้พูด
+        9. ถ้า focus = learning_need ให้ถามในมุมว่า "ตอนนี้อยากให้ช่วยเรื่องไหนมากที่สุด"
+        10. คำถามควรยาวพอประมาณ ไม่สั้นห้วนเกินไป แต่ยังอ่านลื่นและฟังเป็นธรรมชาติ
 
         แนวทางสำคัญ:
         - ถ้า focus = topic → ให้ถามว่า "อยากพัฒนาเรื่องอะไรเป็นหลัก"
         - ถ้า focus = goal → ให้ถามว่า "อยากทำอะไรได้ดีขึ้น"
         - ถ้า focus = event → ให้ถามว่า "จะนำไปใช้ในสถานการณ์ไหน"
+        - ถ้า focus = learning_need → ให้ถามว่า "ตอนนี้อยากให้ช่วยเรื่องไหนมากที่สุด"
 
         ข้อห้าม:
-        - ห้ามตอบยาว
+        - ห้ามตอบยาวเป็นย่อหน้า
         - ห้ามถามหลายคำถามซ้อน
         - ห้ามใช้โทนแข็งหรือเป็นระบบเกินไป
         - ห้ามเสนอหลายตัวเลือกมากเกินจำเป็น
@@ -254,7 +425,8 @@ async def generate_learning_question(
 
         รูปแบบคำตอบ:
         - ตอบเป็นภาษาไทย
-        - 1 ประโยค หรือไม่เกิน 2 ประโยคสั้น
+        - 1 ประโยค หรือไม่เกิน 2 ประโยค
+        - คำถามควรยาวพอประมาณและเป็นธรรมชาติ
         - ต้องเป็นคำถามที่ชวนให้ผู้ใช้ตอบต่อได้ง่าย
         - ตอบเป็น “ข้อความคำถาม” เท่านั้น ไม่มีคำนำ ไม่มี bullet ไม่มี quote
         """
@@ -268,7 +440,7 @@ async def generate_learning_question(
         model=model,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        temperature=0.4,
+        temperature=0.45,
     )
 
     return (content or "ช่วยเล่าเพิ่มเติมอีกนิดได้ไหมครับ").strip()
@@ -617,6 +789,7 @@ def answer_when_learning_data_complete(
     topic: str,
     goal: str,
     event: str,
+    learning_need: str,
 ) -> dict:
     
     # 1) ให้ AI สร้าง query text

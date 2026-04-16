@@ -7,6 +7,7 @@ class ChatState(BaseModel):
     topic: str = "unknown"
     goal: str = "unknown"
     event: str = "unknown"
+    learning_need: str = "unknown"
     last_question: str = "none"
     next_action: str = "none"
     last_question_type: str = "none"
@@ -44,6 +45,7 @@ class LearningProgress(BaseModel):
     topic: str
     goal: str
     event: str
+    learning_need: str = "unknown"
     last_question: str
     next_action: str
     raw: str

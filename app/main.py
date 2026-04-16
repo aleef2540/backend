@@ -9,16 +9,18 @@ def get_db_connection():
 
 
 from app.schemas_all import ChatRequest, ChatResponse, ChatState, ResetRequest
-from app.schemas_model1 import ChatRequest_model1, ChatResponse_model1, ChatState, ResetRequest_model1
 from app.state_store_all import chat_state_store_all
-from app.state_store_model1 import chat_state_store_model1
 from app.services.chat_flow_all import process_chat
+
+from app.schemas_model1 import ChatRequest_model1, ChatResponse_model1, ChatState, ResetRequest_model1
+from app.state_store_model1 import chat_state_store_model1
 from app.services.chat_flow_model1 import process_chat_model1
+
+#fortest api
 from app.services.ai_service import detect_intent
 from app.services.learning_service_all import analyze_learning_progress
 
 app = FastAPI(title="Entraining Chat API")
-
 origins = [
     "https://www.entraining.net",
     "https://entraining.net",
@@ -27,7 +29,6 @@ origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -35,6 +36,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 @app.get("/health")
 async def health():
@@ -112,6 +114,12 @@ async def chat(req: ChatRequest):
             state=state,
             source="debug_error",
         )
+
+    
+@app.post("/chat/reset/all")
+async def reset_chat(payload: ResetRequest):
+    state = chat_state_store_all.reset_state(payload.web_no, payload.member_no)
+    return {"status": "ok", "state": state.model_dump()}
     
 @app.post("/chat/model1", response_model=ChatResponse_model1)
 async def chat(req: ChatRequest_model1):
@@ -161,11 +169,6 @@ async def chat(req: ChatRequest_model1):
     # chat_state_store.set_state(req.web_no, req.member_no, result.state)
 
     # return result
-
-@app.post("/chat/reset/all")
-async def reset_chat(payload: ResetRequest):
-    state = chat_state_store_all.reset_state(payload.web_no, payload.member_no)
-    return {"status": "ok", "state": state.model_dump()}
 
 @app.post("/chat/reset/model1")
 async def reset_chat(payload: ResetRequest_model1):

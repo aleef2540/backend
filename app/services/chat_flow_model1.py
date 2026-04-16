@@ -24,6 +24,7 @@ async def process_chat_model1(req: ChatRequest_model1, state: ChatState, conn) -
         topic = progress.topic
         goal = progress.goal
         event = progress.event
+        learning_need = progress.learning_need
         last_question = progress.last_question
         next_action = progress.next_action
 
@@ -32,6 +33,7 @@ async def process_chat_model1(req: ChatRequest_model1, state: ChatState, conn) -
             topic=topic,
             goal=goal,
             event=event,
+            learning_need = learning_need,
             next_action = next_action,
             last_question=last_question,
             last_question_type="none",
@@ -54,6 +56,12 @@ async def process_chat_model1(req: ChatRequest_model1, state: ChatState, conn) -
             reply = await generate_learning_question(user_message, new_state, 3)
             new_state.last_question = reply
             new_state.last_question_type = "ask_event"
+        
+        elif next_action == "ask_learning_need":
+            # reply = "ask_learning_need"
+            reply = await generate_learning_question(user_message, new_state, 4)
+            new_state.last_question = reply
+            new_state.last_question_type = "ask_learning_need"
 
         elif next_action == "ready":
             # reply = "ready"
@@ -63,6 +71,7 @@ async def process_chat_model1(req: ChatRequest_model1, state: ChatState, conn) -
                 topic=topic,
                 goal=goal,
                 event=event,
+                learning_need=learning_need,
             )
             reply = ans["reply"]
             new_state.last_question = "none"
@@ -104,6 +113,7 @@ async def process_chat_model1(req: ChatRequest_model1, state: ChatState, conn) -
     topic = progress.topic
     goal = progress.goal
     event = progress.event
+    learning_need = progress.learning_need
     last_question = progress.last_question
     next_action = progress.next_action
 
@@ -112,6 +122,7 @@ async def process_chat_model1(req: ChatRequest_model1, state: ChatState, conn) -
         topic=topic,
         goal=goal,
         event=event,
+        learning_need=learning_need,
         last_question=last_question,
         next_action = next_action,
         last_question_type="none",
@@ -143,6 +154,7 @@ async def process_chat_model1(req: ChatRequest_model1, state: ChatState, conn) -
             topic=topic,
             goal=goal,
             event=event,
+            learning_need=learning_need,
         )
         reply = ans["reply"]
         new_state.last_question = "none"
