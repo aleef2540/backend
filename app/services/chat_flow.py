@@ -22,42 +22,50 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
         progress = await analyze_learning_progress(user_message, state)
 
         topic = progress.topic
-        competency = progress.competency
-        consulting_type = progress.consulting_type
-        learning_need = progress.learning_need
+        goal = progress.goal
+        event = progress.event
         last_question = progress.last_question
         next_action = progress.next_action
 
         new_state = ChatState(
             mode="learning",
             topic=topic,
-            consulting_type=consulting_type,
-            competency=competency,
-            learning_need=learning_need,
+            goal=goal,
+            event=event,
+            next_action = next_action,
             last_question=last_question,
             last_question_type="none",
         )
 
         if next_action == "ask_topic":
+            # reply = "ask_topic"
             reply = await generate_learning_question(user_message, new_state, 1)
             new_state.last_question = reply
             new_state.last_question_type = "ask_topic"
 
-        elif next_action == "ask_learning_need":
+        elif next_action == "ask_goal":
+            # reply = "ask_goal"
             reply = await generate_learning_question(user_message, new_state, 2)
             new_state.last_question = reply
-            new_state.last_question_type = "ask_learning_need"
+            new_state.last_question_type = "ask_goal"
+
+        elif next_action == "ask_event":
+            # reply = "ask_event"
+            reply = await generate_learning_question(user_message, new_state, 3)
+            new_state.last_question = reply
+            new_state.last_question_type = "ask_event"
 
         elif next_action == "ready":
+            # reply = "ready"
             ans = answer_when_learning_data_complete(
                 conn=conn,
                 user_message=user_message,
                 topic=topic,
-                competency=competency,
-                learning_need=learning_need,
+                goal=goal,
+                event=event,
             )
             reply = ans["reply"]
-            new_state.last_question = reply
+            new_state.last_question = "none"
             new_state.last_question_type = "answered"
 
         else:
@@ -94,39 +102,47 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
     progress = await analyze_learning_progress(user_message, state)
 
     topic = progress.topic
-    competency = progress.competency
-    consulting_type = progress.consulting_type
-    learning_need = progress.learning_need
+    goal = progress.goal
+    event = progress.event
     last_question = progress.last_question
     next_action = progress.next_action
 
     new_state = ChatState(
         mode="learning",
         topic=topic,
-        consulting_type=consulting_type,
-        competency=competency,
-        learning_need=learning_need,
+        goal=goal,
+        event=event,
         last_question=last_question,
+        next_action = next_action,
         last_question_type="none",
     )
 
     if next_action == "ask_topic":
+        # reply = "ask_topic"
         reply = await generate_learning_question(user_message, new_state, 1)
         new_state.last_question = reply
         new_state.last_question_type = "ask_topic"
 
-    elif next_action == "ask_learning_need":
+    elif next_action == "ask_goal":
+        # reply = "ask_goal"
         reply = await generate_learning_question(user_message, new_state, 2)
         new_state.last_question = reply
-        new_state.last_question_type = "ask_learning_need"
+        new_state.last_question_type = "ask_goal"
+
+    elif next_action == "ask_event":
+        # reply = "ask_event"
+        reply = await generate_learning_question(user_message, new_state, 3)
+        new_state.last_question = reply
+        new_state.last_question_type = "ask_event"
 
     elif next_action == "ready":
+        # reply = "ready"
         ans = answer_when_learning_data_complete(
             conn=conn,
             user_message=user_message,
             topic=topic,
-            competency=competency,
-            learning_need=learning_need,
+            goal=goal,
+            event=event,
         )
         reply = ans["reply"]
         new_state.last_question = "none"
