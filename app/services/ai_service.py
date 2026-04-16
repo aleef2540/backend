@@ -8,8 +8,8 @@ from typing import Any
 
 from openai import OpenAI
 
-from app.schemas import ChatIntentOutput
-from app.schemas import IntentResult
+from app.schemas_all import ChatIntentOutput
+from app.schemas_all import IntentResult
 
 # ปรับตาม env ของคุณเอง
 OPENAI_MODEL_ROUTER = "gpt-4.1-mini"

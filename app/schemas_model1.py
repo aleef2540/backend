@@ -12,7 +12,7 @@ class ChatState(BaseModel):
     last_question_type: str = "none"
 
 
-class ChatRequest(BaseModel):
+class ChatRequest_model1(BaseModel):
     user_message: str = Field(..., min_length=1)
     web_no: Optional[int] = None
     member_no: Optional[int] = None
@@ -32,7 +32,7 @@ class LearningProgressOutput(BaseModel):
     next_action: Literal["ask_topic", "ask_learning_need", "ready", "fallback"] = "fallback"
 
 
-class ChatResponse(BaseModel):
+class ChatResponse_model1(BaseModel):
     reply: str
     state: Optional[ChatState] = None
     source: Optional[str] = None
@@ -48,6 +48,6 @@ class LearningProgress(BaseModel):
     next_action: str
     raw: str
 
-class ResetRequest(BaseModel):
+class ResetRequest_model1(BaseModel):
     web_no: int
     member_no: int

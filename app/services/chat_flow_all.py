@@ -1,0 +1,144 @@
+from app.schemas_all import ChatRequest, ChatResponse, ChatState
+from app.services.ai_service import detect_intent, reply_greeting, reply_general
+from app.services.learning_service_all import (
+    analyze_learning_progress,
+    generate_learning_question,
+    answer_when_learning_data_complete,
+)
+
+
+async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse:
+    user_message = req.user_message.strip()
+
+    if not user_message:
+        return ChatResponse(
+            reply="กรุณาพิมพ์สิ่งที่ต้องการพัฒนา / ปัญหาที่อยากแก้",
+            state=state,
+            source="empty_message",
+        )
+
+    # ===== CASE 1: อยู่ใน learning mode แล้ว =====
+    if state.mode == "learning":
+        progress = await analyze_learning_progress(user_message, state)
+
+        topic = progress.topic
+        competency = progress.competency
+        consulting_type = progress.consulting_type
+        learning_need = progress.learning_need
+        last_question = progress.last_question
+        next_action = progress.next_action
+
+        new_state = ChatState(
+            mode="learning",
+            topic=topic,
+            consulting_type=consulting_type,
+            competency=competency,
+            learning_need=learning_need,
+            last_question=last_question,
+            last_question_type="none",
+        )
+
+        if next_action == "ask_topic":
+            reply = await generate_learning_question(user_message, new_state, 1)
+            new_state.last_question = reply
+            new_state.last_question_type = "ask_topic"
+
+        elif next_action == "ask_learning_need":
+            reply = await generate_learning_question(user_message, new_state, 2)
+            new_state.last_question = reply
+            new_state.last_question_type = "ask_learning_need"
+
+        elif next_action == "ready":
+            ans = answer_when_learning_data_complete(
+                conn=conn,
+                user_message=user_message,
+                topic=topic,
+                competency=competency,
+                learning_need=learning_need,
+            )
+            reply = ans["reply"]
+            new_state.last_question = reply
+            new_state.last_question_type = "answered"
+
+        else:
+            reply = "ช่วยเล่าเพิ่มเติมได้นิดนึงไหมครับ ผมอยากเข้าใจคุณให้ชัดขึ้น 😊"
+
+        return ChatResponse(
+            reply=reply,
+            state=new_state,
+            source="learning_mode",
+        )
+
+    # ===== CASE 2: ยังไม่อยู่ใน learning mode =====
+    output = await detect_intent(user_message)
+
+    #pass
+    if output.intent == "greeting":
+        reply = await reply_greeting(user_message)
+        return ChatResponse(
+            reply=reply,
+            state=state,
+            source="greeting",
+        )
+    
+    #pass
+    if output.intent == "general":
+        reply = await reply_general(user_message)
+        return ChatResponse(
+            reply=reply,
+            state=state,
+            source="general",
+        )
+
+    # ===== CASE 3: intent = learning =====
+    progress = await analyze_learning_progress(user_message, state)
+
+    topic = progress.topic
+    competency = progress.competency
+    consulting_type = progress.consulting_type
+    learning_need = progress.learning_need
+    last_question = progress.last_question
+    next_action = progress.next_action
+
+    new_state = ChatState(
+        mode="learning",
+        topic=topic,
+        consulting_type=consulting_type,
+        competency=competency,
+        learning_need=learning_need,
+        last_question=last_question,
+        last_question_type="none",
+    )
+
+    if next_action == "ask_topic":
+        reply = await generate_learning_question(user_message, new_state, 1)
+        new_state.last_question = reply
+        new_state.last_question_type = "ask_topic"
+
+    elif next_action == "ask_learning_need":
+        reply = await generate_learning_question(user_message, new_state, 2)
+        new_state.last_question = reply
+        new_state.last_question_type = "ask_learning_need"
+
+    elif next_action == "ready":
+        ans = answer_when_learning_data_complete(
+            conn=conn,
+            user_message=user_message,
+            topic=topic,
+            competency=competency,
+            learning_need=learning_need,
+        )
+        reply = ans["reply"]
+        new_state.last_question = "none"
+        new_state.last_question_type = "answered"
+
+    else:
+        reply = "ช่วยเล่าเพิ่มเติมได้นิดนึงไหมครับ ผมอยากเข้าใจคุณให้ชัดขึ้น 😊"
+        new_state.last_question = reply
+        new_state.last_question_type = "ask_topic"
+
+    return ChatResponse(
+        reply=reply,
+        state=new_state,
+        source="learning_entry",
+    )

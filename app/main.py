@@ -8,11 +8,14 @@ def get_db_connection():
     return sqlite3.connect("ai_idp_script.db")
 
 
-from app.schemas import ChatRequest, ChatResponse, ChatState, ResetRequest
-from app.state_store import chat_state_store
-from app.services.chat_flow import process_chat
+from app.schemas_all import ChatRequest, ChatResponse, ChatState, ResetRequest
+from app.schemas_model1 import ChatRequest_model1, ChatResponse_model1, ChatState, ResetRequest_model1
+from app.state_store_all import chat_state_store_all
+from app.state_store_model1 import chat_state_store_model1
+from app.services.chat_flow_all import process_chat
+from app.services.chat_flow_model1 import process_chat_model1
 from app.services.ai_service import detect_intent
-from app.services.learning_service import analyze_learning_progress
+from app.services.learning_service_all import analyze_learning_progress
 
 app = FastAPI(title="Entraining Chat API")
 
@@ -67,7 +70,7 @@ async def analyze_route(req: ChatRequest):
     )
     return result
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat/all", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     if not req.user_message or not req.user_message.strip():
         raise HTTPException(status_code=400, detail="user_message is required")
@@ -79,7 +82,7 @@ async def chat(req: ChatRequest):
     if req.state:
         state = req.state
     else:
-        state = chat_state_store.get_state(req.web_no, req.member_no)
+        state = chat_state_store_all.get_state(req.web_no, req.member_no)
 
     print("DEBUG req.user_message =", user_message)
     print("DEBUG before state =", state)
@@ -94,7 +97,7 @@ async def chat(req: ChatRequest):
 
         print("DEBUG result =", result)
 
-        chat_state_store.set_state(req.web_no, req.member_no, result.state)
+        chat_state_store_all.set_state(req.web_no, req.member_no, result.state)
 
         return ChatResponse(
             reply=result.reply,
@@ -110,13 +113,61 @@ async def chat(req: ChatRequest):
             source="debug_error",
         )
     
+@app.post("/chat/model1", response_model=ChatResponse_model1)
+async def chat(req: ChatRequest_model1):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    user_message = req.user_message.strip()
+    req.user_message = user_message
+    conn = get_db_connection()
+
+    if req.state:
+        state = req.state
+    else:
+        state = chat_state_store_model1.get_state(req.web_no, req.member_no)
+
+    print("DEBUG req.user_message =", user_message)
+    print("DEBUG before state =", state)
+
+    print("==== BEFORE STATE ====")
+    print(state.model_dump())
+
+    try:
+        result = await process_chat_model1(req, state, conn)
+        print("==== AFTER STATE ====")
+        print(result.state.model_dump())
+
+        print("DEBUG result =", result)
+
+        chat_state_store_model1.set_state(req.web_no, req.member_no, result.state)
+
+        return ChatResponse_model1(
+            reply=result.reply,
+            state=result.state,
+            source=result.source or "debug_chat",
+        )
+
+    except Exception as e:
+        print("DEBUG ERROR =", repr(e))
+        return ChatResponse_model1(
+            reply=f"DEBUG ERROR: {str(e)}",
+            state=state,
+            source="debug_error",
+        )
+    
 
     # result = await process_chat(req, state)
     # chat_state_store.set_state(req.web_no, req.member_no, result.state)
 
     # return result
 
-@app.post("/chat/reset")
+@app.post("/chat/reset/all")
 async def reset_chat(payload: ResetRequest):
-    state = chat_state_store.reset_state(payload.web_no, payload.member_no)
+    state = chat_state_store_all.reset_state(payload.web_no, payload.member_no)
+    return {"status": "ok", "state": state.model_dump()}
+
+@app.post("/chat/reset/model1")
+async def reset_chat(payload: ResetRequest_model1):
+    state = chat_state_store_model1.reset_state(payload.web_no, payload.member_no)
     return {"status": "ok", "state": state.model_dump()}

@@ -1,17 +1,17 @@
-from app.schemas import ChatRequest, ChatResponse, ChatState
+from app.schemas_model1 import ChatRequest_model1, ChatResponse_model1, ChatState
 from app.services.ai_service import detect_intent, reply_greeting, reply_general
-from app.services.learning_service import (
+from app.services.learning_service_model1 import (
     analyze_learning_progress,
     generate_learning_question,
     answer_when_learning_data_complete,
 )
 
 
-async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse:
+async def process_chat_model1(req: ChatRequest_model1, state: ChatState, conn) -> ChatResponse_model1:
     user_message = req.user_message.strip()
 
     if not user_message:
-        return ChatResponse(
+        return ChatResponse_model1(
             reply="กรุณาพิมพ์สิ่งที่ต้องการพัฒนา / ปัญหาที่อยากแก้",
             state=state,
             source="empty_message",
@@ -71,7 +71,7 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
         else:
             reply = "ช่วยเล่าเพิ่มเติมได้นิดนึงไหมครับ ผมอยากเข้าใจคุณให้ชัดขึ้น 😊"
 
-        return ChatResponse(
+        return ChatResponse_model1(
             reply=reply,
             state=new_state,
             source="learning_mode",
@@ -83,7 +83,7 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
     #pass
     if output.intent == "greeting":
         reply = await reply_greeting(user_message)
-        return ChatResponse(
+        return ChatResponse_model1(
             reply=reply,
             state=state,
             source="greeting",
@@ -92,7 +92,7 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
     #pass
     if output.intent == "general":
         reply = await reply_general(user_message)
-        return ChatResponse(
+        return ChatResponse_model1(
             reply=reply,
             state=state,
             source="general",
@@ -153,7 +153,7 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
         new_state.last_question = reply
         new_state.last_question_type = "ask_topic"
 
-    return ChatResponse(
+    return ChatResponse_model1(
         reply=reply,
         state=new_state,
         source="learning_entry",

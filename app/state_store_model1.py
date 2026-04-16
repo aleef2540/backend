@@ -1,4 +1,4 @@
-from app.schemas import ChatState
+from app.schemas_model1 import ChatState
 
 class ChatStateStore:
     def __init__(self):
@@ -22,4 +22,4 @@ class ChatStateStore:
         self._store[key] = ChatState()
         return self._store[key]
 
-chat_state_store = ChatStateStore()
+chat_state_store_model1 = ChatStateStore()

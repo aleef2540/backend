@@ -15,7 +15,7 @@ qdrant = QdrantClient(
 client = OpenAI()
 
 
-from app.schemas import ChatState, LearningProgress
+from app.schemas_model1 import ChatState, LearningProgress
 from app.services.ai_service import call_openai_chat
 
 
