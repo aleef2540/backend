@@ -16,7 +16,8 @@ client = OpenAI()
 
 
 from app.schemas_all import ChatState, LearningProgress
-from app.services.ai_service import call_openai_chat
+# from app.services.ai_service import call_openai_chat
+from app.services.call_ai import call_openai_chat_full, call_openai_embedding_full
 
 
 async def analyze_learning_progress(user_message: str, state: ChatState, model: str = "gpt-4.1-mini"):
@@ -248,16 +249,14 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
 
     user_prompt = "ข้อความผู้ใช้: " + user_message
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.1,
+    result = await call_openai_chat_full(
+    model=model,
+    system_prompt=system_prompt,
+    user_prompt=user_prompt,
+    temperature=0.1,
     )
 
-    text = response.choices[0].message.content or ""
+    text = result["content"] or ""
     text = re.sub(r"```json|```", "", text)
     decoded = json.loads(text.strip()) if text.strip() else {}
 
@@ -284,18 +283,20 @@ async def analyze_learning_progress(user_message: str, state: ChatState, model: 
         next_action = "ask_topic"
     elif learning_need == "unknown":
         next_action = "ask_learning_need"
+    elif consulting_type == "unknown":
+        next_action = "ask_consulting_type"
     else:
         next_action = "ready"
 
     return LearningProgress(
-    topic=topic,
-    competency=competency,
-    consulting_type=consulting_type,
-    learning_need=learning_need,
-    last_question=last_question,
-    next_action=next_action,
-    raw=text,
-)
+        topic=topic,
+        competency=competency,
+        consulting_type=consulting_type,
+        learning_need=learning_need,
+        last_question=last_question,
+        next_action=next_action,
+        raw=text,
+    )
 
 
 async def generate_learning_question(
@@ -309,30 +310,38 @@ async def generate_learning_question(
     1 = ask topic
     2 = ask learning need
     3 = ask topic when learning_need exists
+    4 = ask consulting_type
     """
 
     topic = (state.topic or "unknown").strip()
     last_question = (state.last_question or "unknown").strip()
     learning_need = (state.learning_need or "unknown").strip()
+    consulting_type = (getattr(state, "consulting_type", None) or "unknown").strip()
 
     if question_type == 1:
         missing_info = "ยังไม่รู้ว่าผู้ใช้ต้องการเรียนรู้หรือปรึกษาเรื่องอะไร"
         goal = (
             "ถามต่ออย่างเป็นธรรมชาติเพื่อให้ผู้ใช้ระบุหัวข้อที่อยากเรียนรู้หรืออยากปรึกษา "
-            "และ learning need ให้ชัดขึ้นในด้านดังนี้ "
-            "คืออะไร|อะไรบ้าง|เป็นอย่างไร|ต่างกันอย่างไร|มีอะไรบ้าง|ต้องทำอย่างไร| "
-            "โดยเลือกใช้ให้เหมาะสมกบบริบทของหัวข้อ"
+            "ให้ชัดขึ้น โดยเชื่อมจากสิ่งที่ผู้ใช้เพิ่งพูด"
         )
+
     elif question_type == 2:
-        missing_info = "รู้หัวข้อแล้ว แต่ยังไม่รู้ว่าผู้ใช้อยากเรียนรู้มุมไหนหรืออยากได้ความช่วยเหลือด้านไหน"
+        missing_info = "รู้หัวข้อแล้ว แต่ยังไม่รู้ว่าผู้ใช้อยากเรียนรู้มุมไหน หรืออยากได้ความช่วยเหลือด้านไหน"
         goal = (
-            "ให้ AI เลือก learning_need ที่เหมาะที่สุด จาก "
-            "คืออะไร|อะไรบ้าง|เป็นอย่างไร|ต่างกันอย่างไร|มีอะไรบ้าง|ต้องทำอย่างไร| "
-            "แล้วถามนำไปทางนั้นโดยเลือกใช้ให้เหมาะสมกบบริบทของหัวข้อ"
+            "ให้ AI วิเคราะห์และเลือก learning_need ที่เหมาะที่สุดเพียง 1 แบบ จาก "
+            "คืออะไร|อะไรบ้าง|เป็นอย่างไร|ต่างกันอย่างไร|มีอะไรบ้าง|ต้องทำอย่างไร "
+            "แล้วถามนำไปทางนั้นอย่างเป็นธรรมชาติ"
         )
+
     elif question_type == 3:
-        missing_info = "รู้สิ่งที่ผู้ใช้อยากเรียนรู้แล้ว แต่ยังไม่รู้ว่ากำลังพูดถึงหัวข้ออะไร"
-        goal = "ถามต่ออย่างเป็นธรรมชาติเพื่อให้ผู้ใช้ระบุหัวข้อให้ชัด"
+        missing_info = "รู้หัวข้อหรือประเด็นแล้ว แต่ยังไม่รู้ว่าผู้ใช้ต้องการปรึกษาในลักษณะไหน"
+        goal = (
+            "ให้ AI วิเคราะห์ consulting_type ที่เหมาะสมที่สุดจากบริบทของผู้ใช้ เช่น "
+            "อยากได้คำแนะนำ, อยากวิเคราะห์ปัญหา, อยากหาทางออก, อยากวางแผน, "
+            "อยากตัดสินใจ, อยากได้มุมมองเพิ่มเติม "
+            "แล้วสร้างคำถามต่อที่เนียนและช่วยให้ผู้ใช้ตอบง่าย โดยห้ามถามเป็นตัวเลือกตรง ๆ"
+        )
+
     else:
         missing_info = "ข้อมูลครบแล้ว"
         goal = "ไม่ต้องถามเพิ่ม"
@@ -349,22 +358,49 @@ async def generate_learning_question(
 ข้อมูลปัจจุบัน:
 - topic: {topic}
 - learning_need: {learning_need}
+- consulting_type: {consulting_type}
 - สิ่งที่ยังขาด: {missing_info}
 - เป้าหมายของคำถามนี้: {goal}
 
 =====================
 หลักการเลือก learning_need
 =====================
-- ให้ AI วิเคราะห์ว่าจากข้อความผู้ใช้ learning_need แบบใด “เหมาะสมที่สุด”
+- ใช้เมื่อคำถามนี้เกี่ยวกับ learning_need
+- ให้ AI วิเคราะห์ว่าจากข้อความผู้ใช้ learning_need แบบใดเหมาะสมที่สุด
 - ให้เลือกเพียง 1 แบบเท่านั้น
+- ตัวเลือกคือ:
+  - คืออะไร
+  - อะไรบ้าง
+  - เป็นอย่างไร
+  - ต่างกันอย่างไร
+  - มีอะไรบ้าง
+  - ต้องทำอย่างไร
 - ห้ามเสนอหลายตัวเลือก
 - ห้ามถามแบบ A หรือ B
 
 =====================
+หลักการเลือก consulting_type
+=====================
+- ใช้เมื่อคำถามนี้เกี่ยวกับ consulting_type
+- ให้ AI วิเคราะห์ว่าผู้ใช้ต้องการ “ลักษณะของการปรึกษา” แบบใดมากที่สุด
+- ให้เลือกเพียง 1 แบบเท่านั้น
+- ตัวอย่าง consulting_type ที่เป็นไปได้:
+  - ขอคำแนะนำ
+  - วิเคราะห์ปัญหา
+  - หาทางออก
+  - วางแผน
+  - ช่วยตัดสินใจ
+  - ขอความคิดเห็นเพิ่มเติม
+- ห้ามบอกชื่อ consulting_type ตรง ๆ
+- ห้ามเสนอหลายตัวเลือก
+- ห้ามถามแบบ “อยากได้คำแนะนำหรืออยากวางแผน”
+- ต้องถามให้เนียนเหมือนโค้ชกำลังพาผู้ใช้เล่าต่อ
+
+=====================
 วิธีถาม
 =====================
-- เมื่อเลือก learning_need แล้ว ให้สร้างคำถามที่ "พาไปสู่มุมนั้น"
-- ห้ามบอกชื่อ learning_need ตรง ๆ
+- เมื่อเลือก learning_need หรือ consulting_type แล้ว ให้สร้างคำถามที่พาไปสู่มุมนั้น
+- ห้ามบอกชื่อหมวดตรง ๆ
 - ห้ามเสนอหลายทางเลือก
 - ต้องถามแบบเนียน ๆ เหมือนโค้ช
 
@@ -374,10 +410,16 @@ async def generate_learning_question(
 → learning_need ที่เหมาะ: "ต้องทำอย่างไร"
 
 คำถามที่ดี:
-"จากที่คุณเล่ามา คุณอยากเรียนรู้วิธีการบริการจัดการเวลาไหมครับ?"
+"จากที่คุณเล่ามา คุณอยากเรียนรู้วิธีจัดการเวลาให้ดีขึ้นใช่ไหมครับ?"
+
+ผู้ใช้: "ช่วงนี้ทีมมีปัญหาทำงานไม่เข้ากัน"
+→ consulting_type ที่เหมาะ: "วิเคราะห์ปัญหา"
+
+คำถามที่ดี:
+"ถ้าเป็นเรื่องนี้ คุณอยากชวนกันมองก่อนไหมครับว่าต้นตอจริง ๆ ของปัญหาอยู่ตรงไหน?"
 
 คำถามที่ห้าม:
-"คุณอยากวางแผนเวลา หรือจัดการสิ่งรบกวนดี?"
+"คุณอยากวิเคราะห์ปัญหา หรือหาทางออกดีครับ?"
 
 หลักการตอบ:
 - ใช้ข้อมูลจากข้อความล่าสุดของผู้ใช้มาประกอบคำถาม
@@ -400,21 +442,26 @@ async def generate_learning_question(
 - 1 ประโยค หรือไม่เกิน 2 ประโยคสั้น
 - ต้องเป็นคำถามที่ชวนให้ผู้ใช้ตอบต่อได้ง่าย"""
 
-    user_prompt = f"""คำถามจาก โค้ชล่าสุด: {last_question}
+    user_prompt = f"""คำถามจากโค้ชล่าสุด: {last_question}
 ข้อความล่าสุดของผู้ใช้: {user_message}
 
 ช่วยสร้างคำถามถัดไปที่ต่อเนื่องจากข้อความนี้ โดยถามเฉพาะข้อมูลที่ยังขาดอยู่"""
 
-    content = await call_openai_chat(
+    result = await call_openai_chat_full(
         model=model,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         temperature=0.7,
     )
 
-    return (content or "ช่วยเล่าเพิ่มเติมอีกนิดได้ไหมครับ").strip()
+    content = (result["content"] or "").strip()
 
-def build_query_text_by_ai(topic: str, competency: str, learning_need: str) -> dict:
+    if not content:
+        content = "ช่วยเล่าเพิ่มเติมอีกนิดได้ไหมครับ"
+
+    return content
+
+async def build_query_text_by_ai(topic: str, competency: str, learning_need: str) -> dict:
     system = """คุณคือ AI ที่ช่วยสร้าง query text สำหรับใช้ค้นหาข้อมูลใน vector database
 
     กติกา:
@@ -433,16 +480,17 @@ def build_query_text_by_ai(topic: str, competency: str, learning_need: str) -> d
     )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",   # หรือใช้ MODEL_NAME_ROUTER
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+        result =  await call_openai_chat_full(
+            model="gpt-4.1-mini",
+            system_prompt=system,
+            user_prompt=user,
             temperature=0.3,
         )
 
-        content = response.choices[0].message.content.strip()
+        content = (result["content"] or "").strip()
+
+        if not content:
+            content = f"หัวข้อ {topic} ความต้องการเรียนรู้ {learning_need}"
 
         return {
             "ok": True,
@@ -450,27 +498,27 @@ def build_query_text_by_ai(topic: str, competency: str, learning_need: str) -> d
         }
 
     except Exception as e:
-        # ⚠️ ต้อง fallback เหมือน PHP
+        print("DEBUG ERROR (build_query_text):", repr(e))
+
         return {
             "ok": True,
             "query_text": f"หัวข้อ {topic} ความต้องการเรียนรู้ {learning_need}",
         }
 
-def get_embedding_python(text: str) -> dict:
+async def get_embedding_python(text: str) -> dict:
     try:
-        response = client.embeddings.create(
+        result = await call_openai_embedding_full(
             model="text-embedding-3-large",
-            input=text
+            input_text=text,
         )
-
-        embedding = response.data[0].embedding
 
         return {
             "ok": True,
-            "embedding": embedding,
+            "embedding": result["embedding"],
         }
 
     except Exception as e:
+        print("DEBUG ERROR (embedding):", repr(e))
         return {
             "ok": False,
             "error": f"Embedding API error: {str(e)}",
@@ -646,7 +694,7 @@ def build_followup_topics(results: list[dict], limit: int = 2) -> list[str]:
 
     return topics
 
-def generate_final_learning_reply(
+async def generate_final_learning_reply(
     user_message: str,
     topic: str,
     competency: str,
@@ -687,16 +735,17 @@ Topic ที่เกี่ยวข้อง (ใช้เฉพาะสำห
 ช่วยตอบผู้ใช้โดยให้อธิบายว่าสิ่งที่ผู้ใช้กำลังติดอยู่คือ competency ด้านใด ลักษะไหนที่ผู้ใช้ติดอยู่ แล้วค่อยแนะนำวิธีแก้ปัญหาโดยสรุปสาระสำคัญจาก Context ให้เป็นธรรมชาติไม่ให้เหมือนโปรแกรมให้เหมือนโค้ชคุยมากกว่า"""
 
     try:
-        response = client.chat.completions.create(
+        result = await call_openai_chat_full(
             model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            system_prompt=system,
+            user_prompt=user,
             temperature=0.3,
         )
 
-        content = response.choices[0].message.content.strip()
+        content = (result["content"] or "").strip()
+
+        if not content:
+            content = "ขอข้อมูลเพิ่มเติมอีกนิดได้ไหมครับ"
 
         return {
             "ok": True,
@@ -704,12 +753,14 @@ Topic ที่เกี่ยวข้อง (ใช้เฉพาะสำห
         }
 
     except Exception as e:
+        print("DEBUG ERROR (chat block):", repr(e))
+
         return {
             "ok": False,
             "error": str(e),
         }
     
-def answer_when_learning_data_complete(
+async def answer_when_learning_data_complete(
     conn,
     user_message: str,
     topic: str,
@@ -718,7 +769,7 @@ def answer_when_learning_data_complete(
 ) -> dict:
     
     # 1) ให้ AI สร้าง query text
-    q = build_query_text_by_ai(topic, competency, learning_need)
+    q = await build_query_text_by_ai(topic, competency, learning_need)
     if not q["ok"]:
         return {
             "ok": False,
@@ -727,7 +778,7 @@ def answer_when_learning_data_complete(
     query_text = q["query_text"]
 
     # 2) embedding
-    emb = get_embedding_python(query_text)
+    emb = await get_embedding_python(query_text)
     if not emb["ok"]:
         return {
             "ok": False,
@@ -764,7 +815,7 @@ def answer_when_learning_data_complete(
     follow = build_followup_topics(top_follow, 2)
 
     # 5) generate final reply
-    final = generate_final_learning_reply(
+    final = await generate_final_learning_reply(
         user_message=user_message,
         topic=topic,
         competency=competency,

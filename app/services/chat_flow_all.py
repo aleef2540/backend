@@ -48,8 +48,13 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
             new_state.last_question = reply
             new_state.last_question_type = "ask_learning_need"
 
+        elif next_action == "ask_consulting_type":
+            reply = await generate_learning_question(user_message, new_state, 3)
+            new_state.last_question = reply
+            new_state.last_question_type = "ask_consulting_type"
+
         elif next_action == "ready":
-            ans = answer_when_learning_data_complete(
+            ans = await answer_when_learning_data_complete(
                 conn=conn,
                 user_message=user_message,
                 topic=topic,
@@ -121,7 +126,7 @@ async def process_chat(req: ChatRequest, state: ChatState, conn) -> ChatResponse
         new_state.last_question_type = "ask_learning_need"
 
     elif next_action == "ready":
-        ans = answer_when_learning_data_complete(
+        ans = await answer_when_learning_data_complete(
             conn=conn,
             user_message=user_message,
             topic=topic,

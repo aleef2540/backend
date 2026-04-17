@@ -17,14 +17,15 @@ client = OpenAI()
 
 
 from app.schemas_model1 import ChatState, LearningProgress
-from app.services.ai_service import call_openai_chat
+# from app.services.ai_service import call_openai_chat_full
+from app.services.call_ai import call_openai_chat_full, call_openai_embedding_full
 
 
 async def analyze_learning_progress(
     user_message: str,
     state: ChatState,
     model: str = "gpt-4.1-mini"
-) -> LearningProgress:
+    ) -> LearningProgress:
     current_topic = str(getattr(state, "topic", "unknown") or "unknown").strip()
     current_goal = str(getattr(state, "goal", "unknown") or "unknown").strip()
     current_event = str(getattr(state, "event", "unknown") or "unknown").strip()
@@ -280,7 +281,6 @@ async def analyze_learning_progress(
         raw=text,
     )
 
-
 async def generate_learning_question(
     user_message: str,
     state: ChatState,
@@ -436,14 +436,19 @@ async def generate_learning_question(
 
         ช่วยสร้างคำถามถัดไปที่ต่อเนื่องจากข้อความนี้ โดยถามเฉพาะข้อมูลที่ยังขาดอยู่"""
 
-    content = await call_openai_chat(
-        model=model,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        temperature=0.45,
+    result = await call_openai_chat_full(
+    model=model,
+    system_prompt=system_prompt,
+    user_prompt=user_prompt,
+    temperature=0.6,
     )
 
-    return (content or "ช่วยเล่าเพิ่มเติมอีกนิดได้ไหมครับ").strip()
+    content = (result["content"] or "").strip()
+
+    if not content:
+        content = "ช่วยเล่าเพิ่มเติมอีกนิดได้ไหมครับ"
+
+    return content
 
 def build_query_text_by_ai(topic: str, goal: str, event: str) -> dict:
     system = """คุณคือ AI ที่ช่วยสร้าง query text สำหรับใช้ค้นหาข้อมูลใน vector database
