@@ -31,6 +31,7 @@ async def analyze_learning_progress(
     current_event = str(getattr(state, "event", "unknown") or "unknown").strip()
     current_learning_need = str(getattr(state, "learning_need", "unknown") or "unknown").strip()
     last_question = str(getattr(state, "last_question", "none") or "none").strip()
+    last_question_type = str(getattr(state, "last_question_type", "none") or "none").strip()
 
     def normalize_text(value: Any) -> str:
         if value is None:
@@ -78,6 +79,12 @@ async def analyze_learning_progress(
         - event ปัจจุบัน: {current_event}
         - learning_need ปัจจุบัน: {current_learning_need}
         - last_question: {last_question}
+        - last_question_type: {last_question_type}
+
+        รอบนี้ให้วิเคราะห์โดยเน้น field เป้าหมายคือ: {last_question_type}
+        - ถ้าข้อความล่าสุดตอบ field นี้ได้ ให้เติม field นี้
+        - field อื่นเติมได้เฉพาะเมื่อชัดเจนมาก
+        - ห้ามใช้ถ้อยคำของ last_question เพื่อเดาว่าต้องตอบ field ไหน
 
         =====================
         ความหมายของแต่ละ field
@@ -334,7 +341,7 @@ async def generate_learning_question(
 
         ผู้ใช้: "อยากพัฒนาเรื่องการบริหารเวลา"
         คำถามที่ดี:
-        "ถ้าเป็นเรื่องการบริหารเวลา ตอนนี้คุณอยากให้ตัวเองทำอะไรได้ดีขึ้นครับ เช่น ทำงานให้เสร็จเร็วขึ้น จัดลำดับงานได้ชัดขึ้น หรือคุมเวลาในแต่ละวันได้ดีขึ้น"
+        "ถ้าเป็นเรื่องการบริหารเวลา ตอนนี้คุณอยากให้ตัวเองทำอะไรได้ดีขึ้นครับ เช่น อยากทำงานให้เสร็จเร็วขึ้น อยากจัดลำดับงานได้ชัดขึ้น หรืออยากคุมเวลาในแต่ละวันได้ดีขึ้น"
         """
 
     elif question_type == 3:

@@ -37,8 +37,9 @@ def safe_state_dump(state: Any) -> dict:
 
 def print_state(label: str, state: Any) -> None:
     dumped = safe_state_dump(state)
-    print(f"==== {label} ====")
+    print(f"==== {label} ===========================================================================================================================")
     print(dumped)
+    print(f"========================================================================================================================================")
 
 
 def print_debug(label: str, value: Any) -> None:
