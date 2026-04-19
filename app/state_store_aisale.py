@@ -1,0 +1,27 @@
+from app.schemas_aisale import ChatState_aisale
+
+
+class ChatStateStoreAISale:
+    def __init__(self):
+        self._store = {}
+
+    def _make_key(self, web_no: int | None, member_no: int | None) -> str:
+        web_no = web_no or 0
+        member_no = member_no or 0
+        return f"web_{web_no}_member_{member_no}"
+
+    def get_state(self, web_no: int | None, member_no: int | None) -> ChatState_aisale:
+        key = self._make_key(web_no, member_no)
+        return self._store.get(key, ChatState_aisale())
+
+    def set_state(self, web_no: int | None, member_no: int | None, state: ChatState_aisale):
+        key = self._make_key(web_no, member_no)
+        self._store[key] = state
+
+    def reset_state(self, web_no: int | None, member_no: int | None) -> ChatState_aisale:
+        key = self._make_key(web_no, member_no)
+        self._store[key] = ChatState_aisale()
+        return self._store[key]
+
+
+chat_state_store_aisale = ChatStateStoreAISale()

@@ -20,6 +20,10 @@ from app.schemas_model2 import ChatRequest_model2, ChatResponse_model2, ResetReq
 from app.state_store_model2 import chat_state_store_model2
 from app.services.chat_flow_model2 import process_chat_model2
 
+from app.schemas_aisale import ChatRequest_aisale, ChatResponse_aisale, ResetRequest_aisale
+from app.state_store_aisale import chat_state_store_aisale
+from app.services.chat_flow_aisale import process_chat_aisale
+
 from app.schemas_aicoach import ChatResponse_aicoach, ChatRequest_aicoach, ResetRequest_aicaoch, ChatState
 from app.state_store_aicoach import chat_state_store_aicoach
 from app.services.chat_flow_aicoach import process_chat_aicoach
@@ -302,4 +306,48 @@ async def chat(req: ChatRequest_aicoach):
 @app.post("/chat/reset/ai-coach")
 async def reset_chat(payload: ResetRequest_model2):
     state = chat_state_store_aicoach.reset_state(payload.web_no, payload.member_no)
+    return {"status": "ok", "state": state.model_dump()}
+
+@app.post("/chat/ai-sale", response_model=ChatResponse_aisale)
+async def chat_ai_sale(req: ChatRequest_aisale):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    user_message = req.user_message.strip()
+    req.user_message = user_message
+    conn = get_db_connection()
+
+    if req.state:
+        state = req.state
+    else:
+        state = chat_state_store_aisale.get_state(req.web_no, req.member_no)
+
+    print_state("BEFORE STATE", state)
+
+    try:
+        result = await process_chat_aisale(req, state, conn)
+        print_state("AFTER STATE", result.state)
+
+        chat_state_store_aisale.set_state(req.web_no, req.member_no, result.state)
+
+        return ChatResponse_aisale(
+            reply=result.reply,
+            state=result.state,
+            source=result.source or "ai_sale",
+            # courses=result.courses,
+        )
+
+    except Exception as e:
+        print("DEBUG ERROR =", repr(e))
+        return ChatResponse_aisale(
+            reply=f"DEBUG ERROR: {str(e)}",
+            state=state,
+            source="debug_error",
+            courses=[],
+        )
+
+
+@app.post("/chat/reset/ai-sale")
+async def reset_chat_ai_sale(payload: ResetRequest_aisale):
+    state = chat_state_store_aisale.reset_state(payload.web_no, payload.member_no)
     return {"status": "ok", "state": state.model_dump()}
