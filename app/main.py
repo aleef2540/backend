@@ -32,6 +32,23 @@ from app.constants.coach_questions import FIXED_QUESTIONS
 
 from app.utils.debug_state import print_state, print_debug
 
+from fastapi import Request
+from app.schemas_aiweb import ChatRequest_aiweb, ChatResponse_aiweb, ResetRequest_aiweb
+from app.services.chat_flow_aiweb import process_chat_aiweb
+from app.services.chat_db_aiweb import (
+    get_mysql_connection,
+    ensure_chat_session,
+    load_chat_state,
+    save_chat_state,
+    insert_chat_message,
+    insert_request_log,
+    reset_chat_state,
+)
+
+from app.schemas_aiselflearning import ChatRequest_aiselflearning, ChatResponse_aiselflearning
+from app.state_store_aiselflearning import chat_state_store_aiselflearning
+from app.services.chat_flow_aiselflearning import process_chat_aiselflearning
+from app.services.chat_history_aiselflearning import insert_chat_history_aiselflearning
 
 #fortest api
 from app.services.ai_service import detect_intent
@@ -39,6 +56,7 @@ from app.services.learning_service_all import analyze_learning_progress
 
 app = FastAPI(title="Entraining Chat API")
 origins = [
+    "https://www.enmarks.com",
     "https://www.entraining.net",
     "https://entraining.net",
     "http://localhost",
@@ -351,3 +369,159 @@ async def chat_ai_sale(req: ChatRequest_aisale):
 async def reset_chat_ai_sale(payload: ResetRequest_aisale):
     state = chat_state_store_aisale.reset_state(payload.web_no, payload.member_no)
     return {"status": "ok", "state": state.model_dump()}
+
+@app.post("/chat/ai-web", response_model=ChatResponse_aiweb)
+async def chat_ai_web(req: ChatRequest_aiweb, request: Request):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    user_message = req.user_message.strip()
+    req.user_message = user_message
+
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent", "")
+
+    conn_chat = get_mysql_connection()
+    conn_script = get_db_connection()   # ตัวเดิมของคุณ
+
+    try:
+        ensure_chat_session(
+            conn_chat,
+            chat_id=req.chat_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+
+        insert_request_log(
+            conn_chat,
+            chat_id=req.chat_id,
+            ip_address=ip_address,
+        )
+
+        insert_chat_message(
+            conn_chat,
+            chat_id=req.chat_id,
+            sender_type="user",
+            message_text=user_message,
+        )
+
+        if req.state:
+            state = req.state
+        else:
+            state = load_chat_state(conn_chat, req.chat_id)
+
+        result = await process_chat_aiweb(req, state, conn_script)
+
+        save_chat_state(conn_chat, req.chat_id, result.state)
+
+        insert_chat_message(
+            conn_chat,
+            chat_id=req.chat_id,
+            sender_type="assistant",
+            message_text=result.reply,
+        )
+
+        return ChatResponse_aiweb(
+            reply=result.reply,
+            state=result.state,
+            source=result.source or "ai_web",
+            chat_id=req.chat_id,
+        )
+
+    except Exception as e:
+        print("DEBUG ERROR =", repr(e))
+        return ChatResponse_aiweb(
+            reply=f"DEBUG ERROR: {str(e)}",
+            state=state if 'state' in locals() else None,
+            source="debug_error",
+            chat_id=req.chat_id,
+        )
+
+    finally:
+        try:
+            conn_chat.close()
+        except Exception:
+            pass
+        try:
+            conn_script.close()
+        except Exception:
+            pass
+
+
+@app.post("/chat/reset/ai-web")
+async def reset_chat_ai_web(payload: ResetRequest_aiweb):
+    conn_chat = get_mysql_connection()
+    try:
+        reset_chat_state(conn_chat, payload.chat_id)
+        return {"status": "ok", "chat_id": payload.chat_id}
+    finally:
+        conn_chat.close()
+
+@app.post("/chat/ai-self-learning", response_model=ChatResponse_aiselflearning)
+async def chat_ai_self_learning(req: ChatRequest_aiselflearning):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    user_message = req.user_message.strip()
+    req.user_message = user_message
+    conn_mysql = get_mysql_connection()
+
+    if req.state:
+        state = req.state
+    else:
+        state = chat_state_store_aiselflearning.get_state(req.chat_id)
+
+    print_debug("req.user_message", user_message)
+    print_debug("before state", state)
+    print_state("BEFORE STATE", state)
+
+    try:
+        result = await process_chat_aiselflearning(req, state, conn_mysql)
+
+        insert_chat_history_aiselflearning(
+        conn=conn_mysql,
+        chat_id=req.chat_id,
+        course_no=req.OCourse_no,
+        user_message=req.user_message,
+        ai_reply=result.reply,
+        ai_status=result.status,
+        ai_reason=result.reason,
+)
+
+
+        print_state("AFTER STATE", result.state)
+        print_debug("result", result)
+
+        chat_state_store_aiselflearning.set_state(req.chat_id, result.state)
+
+        return ChatResponse_aiselflearning(
+            reply=result.reply,
+            state=result.state,
+            source=result.source or "ai_self_learning",
+            chat_id=req.chat_id,
+        )
+
+    except Exception as e:
+        print("DEBUG ERROR =", repr(e))
+        return ChatResponse_aiselflearning(
+            reply=f"DEBUG ERROR: {str(e)}",
+            state=state,
+            source="debug_error",
+            chat_id=req.chat_id,
+        )
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.post("/chat/reset/ai-self-learning")
+async def reset_chat_ai_self_learning(payload: ResetRequest_aiselflearning):
+    conn_chat = get_mysql_connection_aisl()
+    try:
+        reset_chat_state_aisl(conn_chat, payload.chat_id)
+        return {"status": "ok", "chat_id": payload.chat_id}
+    finally:
+        conn_chat.close()
