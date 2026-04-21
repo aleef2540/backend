@@ -50,6 +50,14 @@ from app.state_store_aiselflearning import chat_state_store_aiselflearning
 from app.services.chat_flow_aiselflearning import process_chat_aiselflearning
 from app.services.chat_history_aiselflearning import insert_chat_history_aiselflearning
 
+from app.schemas_aicustom import (
+    ChatRequest_aicustom,
+    ChatResponse_aicustom,
+    ResetRequest_aicustom,
+)
+from app.state_store_aicustom import chat_state_store_aicustom
+from app.services.chat_flow_aicustom import process_chat_aicustom
+
 #fortest api
 from app.services.ai_service import detect_intent
 from app.services.learning_service_all import analyze_learning_progress
@@ -512,7 +520,7 @@ async def chat_ai_self_learning(req: ChatRequest_aiselflearning):
 
     finally:
         try:
-            conn.close()
+            conn_mysql.close()
         except Exception:
             pass
 
@@ -525,3 +533,68 @@ async def reset_chat_ai_self_learning(payload: ResetRequest_aiselflearning):
         return {"status": "ok", "chat_id": payload.chat_id}
     finally:
         conn_chat.close()
+
+
+@app.post("/chat/ai-custom", response_model=ChatResponse_aicustom)
+async def chat_ai_custom(req: ChatRequest_aicustom):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    user_message = req.user_message.strip()
+    req.user_message = user_message
+    conn_mysql = get_mysql_connection()
+
+    if req.state:
+        state = req.state
+    else:
+        state = chat_state_store_aicustom.get_state(req.web_no, req.member_no)
+
+    # sync web/member ลง state
+    state.web_no = req.web_no
+    state.member_no = req.member_no
+
+    # ถ้า frontend ส่ง course_use มา ให้เก็บลง state ทันที
+    if req.course_use:
+        state.course_use = [str(x).strip() for x in req.course_use if str(x).strip()]
+
+    print_debug("req.user_message", user_message)
+    print_debug("before state", state)
+    print_state("BEFORE STATE", state)
+
+    try:
+        result = await process_chat_aicustom(req, state, conn_mysql)
+
+        print_state("AFTER STATE", result.state)
+        print_debug("result", result)
+
+        chat_state_store_aicustom.set_state(req.web_no, req.member_no, result.state)
+
+        return ChatResponse_aicustom(
+            reply=result.reply,
+            state=result.state,
+            source=result.source or "ai_custom",
+        )
+
+    except Exception as e:
+        print("DEBUG ERROR =", repr(e))
+        return ChatResponse_aicustom(
+            reply=f"DEBUG ERROR: {str(e)}",
+            state=state,
+            source="debug_error",
+        )
+
+    finally:
+        try:
+            conn_mysql.close()
+        except Exception:
+            pass
+
+@app.post("/chat/reset/ai-custom")
+async def reset_chat_ai_custom(payload: ResetRequest_aicustom):
+    state = chat_state_store_aicustom.reset_state(payload.web_no, payload.member_no)
+    return {
+        "status": "ok",
+        "state": state.model_dump(),
+        "web_no": payload.web_no,
+        "member_no": payload.member_no,
+    }
