@@ -12,6 +12,7 @@ from app.services.ai_service_aicustom import (
     
 )
 from app.schemas_aicustom import ChatState_aicustom
+import random
 
 
 def build_video_payload(video):
@@ -155,6 +156,15 @@ def map_followup_answer_type(followup_type: str) -> str:
     }
     return mapping.get(followup_type, "followup_expanded")
 
+def build_application_message(user_message: str, state) -> str:
+    return (
+        f"{user_message}\n\n"
+        f"[ANSWER_MODE]: application\n"
+        f"[PREVIOUS_ANSWER]: {state.last_answer or ''}\n"
+        f"[PREVIOUS_INTENT]: {state.last_intent or ''}\n"
+        f"[PREVIOUS_ANSWER_TYPE]: {state.last_answer_type or ''}\n"
+        f"[INSTRUCTION]: ช่วยตอบในเชิงการนำไปใช้จริง วิธีเริ่มต้น ขั้นตอน หรือแนวทางปฏิบัติที่นำไปใช้กับงานได้"
+    )
 
 async def process_chat_aicustom(req, state, conn):
     if state is None:
@@ -342,12 +352,21 @@ async def process_chat_aicustom(req, state, conn):
     elif intent == "ask_concept":
 
         active_video = None
+        resolved_topic = topic if topic != "unknown" else state.topic
 
-        if topic != "unknown":
+        if resolved_topic and resolved_topic != "unknown":
 
-            course_match = find_course_by_topic(course_data, topic)
+            course_match = None
+
+            if state.active_course_no:
+                course_match = find_course_by_no(course_data, state.active_course_no)
+
+            if not course_match:
+                course_match = find_course_by_topic(course_data, resolved_topic)
 
             print("DEBUG topic =", topic)
+            print("DEBUG state.topic =", state.topic)
+            print("DEBUG resolved_topic =", resolved_topic)
             print("DEBUG course_match =", course_match)
             print("DEBUG course_match type =", type(course_match))
 
@@ -362,14 +381,13 @@ async def process_chat_aicustom(req, state, conn):
                 print("DEBUG videos =", videos)
 
                 if script:
-                    reply = await reply_ask_concept_with_topic(user_message, topic, script)
+                    reply = await reply_ask_concept_with_topic(user_message, resolved_topic, script)
                     state.mode = "learning"
-                    state.topic = topic
+                    state.topic = resolved_topic
                     state.active_course_no = course_match.get("course_no")
                     state.last_intent = "ask_concept"
                     state.last_answer_type = "concept_explained"
 
-                    # ส่ง video ตัวแรกกลับไปพร้อม response
                     active_video = build_video_payload(videos[0]) if videos else None
 
                 else:
@@ -454,7 +472,12 @@ async def process_chat_aicustom(req, state, conn):
                 state.last_answer_type = map_followup_answer_type(followup_type)
                 state.last_answer = reply
 
-                active_video = build_video_payload(videos[0]) if videos else None
+                if len(videos) > 1:
+                    active_video = build_video_payload(random.choice(videos[1:]))
+                elif len(videos) == 1:
+                    active_video = build_video_payload(videos[0])
+                else:
+                    active_video = None
 
             else:
                 reply = "ผมหาหัวข้อที่ต่อเนื่องได้แล้ว แต่ยังไม่พบรายละเอียดเพียงพอสำหรับขยายคำตอบครับ"
@@ -471,6 +494,77 @@ async def process_chat_aicustom(req, state, conn):
             state.last_intent = "ask_followup"
             state.last_answer_type = "followup_no_course"
             state.last_answer = reply
+
+    elif intent == "ask_application":
+
+        course_match = None
+
+        if state.active_course_no:
+            course_match = find_course_by_no(course_data, state.active_course_no)
+
+        if not course_match and topic and topic != "unknown":
+            course_match = find_course_by_topic(course_data, topic)
+
+        if not course_match and state.topic and state.topic != "unknown":
+            course_match = find_course_by_topic(course_data, state.topic)
+
+        print("DEBUG ask_application topic =", topic)
+        print("DEBUG ask_application state.topic =", state.topic)
+        print("DEBUG ask_application active_course_no =", state.active_course_no)
+        print("DEBUG ask_application course_match =", course_match)
+
+        if course_match:
+            script = str(course_match.get("script") or "").strip()
+            videos = course_match.get("videos") or []
+
+            if script:
+                resolved_topic = topic if topic and topic != "unknown" else state.topic
+                application_message = build_application_message(user_message, state)
+
+                reply = await reply_ask_concept_with_topic(
+                    application_message,
+                    resolved_topic,
+                    script
+                )
+
+                state.mode = "learning"
+                state.topic = resolved_topic
+                state.active_course_no = course_match.get("course_no")
+                state.last_intent = "ask_application"
+                state.last_answer_type = "application_given"
+                state.last_answer = reply
+
+                if len(videos) > 1:
+                    active_video = build_video_payload(random.choice(videos[1:]))
+                elif len(videos) == 1:
+                    active_video = build_video_payload(videos[0])
+                else:
+                    active_video = None
+
+            else:
+                reply = "ผมหัวข้อที่เกี่ยวข้องได้แล้ว แต่ยังไม่พบรายละเอียดเพียงพอสำหรับอธิบายการนำไปใช้ครับ"
+                state.mode = "discover"
+                state.active_course_no = None
+                state.last_intent = "ask_application"
+                state.last_answer_type = "application_not_found"
+                state.last_answer = reply
+
+        else:
+            reply = "ต้องการให้นำเรื่องอะไรไปใช้ครับ 😊"
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_application"
+            state.last_answer_type = "application_needs_topic"
+            state.last_answer = reply
+
+        return type("Obj", (), {
+            "reply": reply,
+            "status": "learning" if state.mode == "learning" else "discover",
+            "reason": "intent_ask_application",
+            "state": state,
+            "source": "ai_custom_application",
+            "active_video": active_video,
+        })()
     
 
     # ==================================================

@@ -525,14 +525,14 @@ async def chat_ai_self_learning(req: ChatRequest_aiselflearning):
             pass
 
 
-@app.post("/chat/reset/ai-self-learning")
-async def reset_chat_ai_self_learning(payload: ResetRequest_aiselflearning):
-    conn_chat = get_mysql_connection_aisl()
-    try:
-        reset_chat_state_aisl(conn_chat, payload.chat_id)
-        return {"status": "ok", "chat_id": payload.chat_id}
-    finally:
-        conn_chat.close()
+# @app.post("/chat/reset/ai-self-learning")
+# async def reset_chat_ai_self_learning(payload: ResetRequest_aiselflearning):
+#     conn_chat = get_mysql_connection_aisl()
+#     try:
+#         reset_chat_state_aisl(conn_chat, payload.chat_id)
+#         return {"status": "ok", "chat_id": payload.chat_id}
+#     finally:
+#         conn_chat.close()
 
 
 @app.post("/chat/ai-custom", response_model=ChatResponse_aicustom)
