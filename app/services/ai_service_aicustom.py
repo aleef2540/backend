@@ -21,7 +21,7 @@ async def detect_intent(user_message: str, course_data) -> dict:
     - general = คุยทั่วไป ยังไม่ชัดว่าเกี่ยวกับการเรียนรู้เรื่องอะไร
     - ask_concept = ผู้ใช้อยากรู้ความหมาย อยากเข้าใจเรื่องใดเรื่องหนึ่ง
     - ask_summary = ผู้ใช้ขอให้สรุป / ย่อ / อธิบายสั้น
-    - ask_application = ผู้ใช้ถามการนำไปใช้จริง หรือถามว่าควรทำอย่างไร
+    - ask_application = ผู้ใช้ถามการนำไปใช้จริง หรือถามว่าควรทำอย่างไร ทำอะไรได้บ้าง
     - ask_recommend_course = ผู้ใช้ถามว่าคุณช่วยอะไรได้บ้าง มีความรู้เรื่องอะไร ควรเรียนอะไร หรือคอร์สไหนเหมาะ
     - ask_followup = ผู้ใช้ถามต่อจากบริบทเดิม เช่น ขยายเพิ่ม ยกตัวอย่างเพิ่ม
     - out_of_scope = เป็นเรื่องนอกขอบเขต self learning ชัดเจน
@@ -37,11 +37,13 @@ async def detect_intent(user_message: str, course_data) -> dict:
     กฎสำคัญ:
     - อย่าใช้ unknown ง่ายเกินไป
     - ถ้าข้อความเป็นการคุยทั่วไป ให้เป็น general
-    - ถ้าผู้ใช้ถามว่า "คุณทำอะไรได้บ้าง", "มีความรู้เรื่องอะไรบ้าง", "ช่วยอะไรได้บ้าง" ให้เป็น ask_recommend_course
+    - ถ้าผู้ใช้ถามเกี่ยวกับ "AI" เช่น "คุณทำอะไรได้บ้าง", "ช่วยอะไรได้บ้าง", "มีความรู้อะไร" ให้เป็น ask_recommend_course
+    - ถ้าผู้ใช้ถามเกี่ยวกับหัวข้อ เช่น "การสอนงานทำอะไรได้บ้าง", "Coaching มีประโยชน์อะไร", "Feedback ใช้ทำอะไร" ให้เป็น ask_application
     - ถ้าข้อความไม่เกี่ยวกับการเรียนรู้และเป็นเรื่องอื่นชัดเจน เช่น สัตว์เลี้ยง อาหาร ดารา ข่าวทั่วไป ให้เป็น out_of_scope
     - ถ้าหา topic ไม่เจอ ก็ยังเลือก intent ที่ใกล้ที่สุดได้
     - topic ไม่จำเป็นต้องมีเสมอ
     - ใช้ unknown เฉพาะเมื่อข้อความสั้นมาก แปลไม่ออก หรือไม่มีเจตนาชัดจริง ๆ
+    - ถ้าผู้ใช้พูดสั้น ๆ เช่น "แล้วมีอะไรอีก", "มีอีกไหม", "แล้วต่อ", "เพิ่มอีกหน่อย" และมีบริบทก่อนหน้า ให้เป็น ask_followup
 
     ตัวอย่าง:
     - "สวัสดี" => greeting
@@ -54,6 +56,10 @@ async def detect_intent(user_message: str, course_data) -> dict:
     - "ถ้าลูกทีมไม่เปิดใจควรทำยังไง" => ask_application
     - "ช่วยยกตัวอย่างเพิ่ม" => ask_followup
     - "แมวของฉันสีส้ม" => out_of_scope
+    - ถ้าผู้ใช้ถามว่า "มันทำอะไรได้", "มีประโยชน์อะไร", "ช่วยอะไรได้", "เอาไปใช้ยังไง" ให้เป็น intent = ask_application
+    - "แล้วมีอะไรอีก" → ask_followup
+    - "มีอีกไหม" → ask_followup
+    - "ขอเพิ่มอีกหน่อย" → ask_followup
     - "..." => unknown
 
     ตอบเป็น JSON เท่านั้น:
@@ -64,7 +70,7 @@ async def detect_intent(user_message: str, course_data) -> dict:
     """.strip()
 
     result = await call_openai_chat_full(
-        model="gpt-4.1-mini",
+        model="gpt-4.1-nano",
         system_prompt=system_prompt,
         user_prompt=user_message,
         temperature=0.1,

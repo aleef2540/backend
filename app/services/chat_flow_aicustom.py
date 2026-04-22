@@ -166,6 +166,17 @@ def build_application_message(user_message: str, state) -> str:
         f"[INSTRUCTION]: ช่วยตอบในเชิงการนำไปใช้จริง วิธีเริ่มต้น ขั้นตอน หรือแนวทางปฏิบัติที่นำไปใช้กับงานได้"
     )
 
+def build_summary_message(user_message: str, state) -> str:
+    return (
+        f"{user_message}\n\n"
+        f"[ANSWER_MODE]: summary\n"
+        f"[PREVIOUS_ANSWER]: {state.last_answer or ''}\n"
+        f"[PREVIOUS_INTENT]: {state.last_intent or ''}\n"
+        f"[PREVIOUS_ANSWER_TYPE]: {state.last_answer_type or ''}\n"
+        f"[INSTRUCTION]: ช่วยสรุปให้กระชับ เข้าใจง่าย เน้นใจความสำคัญ ไม่ต้องยาว"
+    )
+
+
 async def process_chat_aicustom(req, state, conn):
     if state is None:
         state = ChatState_aicustom()
@@ -563,6 +574,72 @@ async def process_chat_aicustom(req, state, conn):
             "reason": "intent_ask_application",
             "state": state,
             "source": "ai_custom_application",
+            "active_video": active_video,
+        })()
+    
+    elif intent == "ask_summary":
+
+        course_match = None
+
+        if state.active_course_no:
+            course_match = find_course_by_no(course_data, state.active_course_no)
+
+        if not course_match and topic and topic != "unknown":
+            course_match = find_course_by_topic(course_data, topic)
+
+        if not course_match and state.topic and state.topic != "unknown":
+            course_match = find_course_by_topic(course_data, state.topic)
+
+        print("DEBUG ask_summary topic =", topic)
+        print("DEBUG ask_summary state.topic =", state.topic)
+        print("DEBUG ask_summary active_course_no =", state.active_course_no)
+        print("DEBUG ask_summary course_match =", course_match)
+
+        if course_match:
+            script = str(course_match.get("script") or "").strip()
+            videos = course_match.get("videos") or []
+
+            if script:
+                resolved_topic = topic if topic and topic != "unknown" else state.topic
+                summary_message = build_summary_message(user_message, state)
+
+                reply = await reply_ask_concept_with_topic(
+                    summary_message,
+                    resolved_topic,
+                    script
+                )
+
+                state.mode = "learning"
+                state.topic = resolved_topic
+                state.active_course_no = course_match.get("course_no")
+                state.last_intent = "ask_summary"
+                state.last_answer_type = "summary_given"
+                state.last_answer = reply
+
+                active_video = build_video_payload(videos[-1]) if videos else None
+
+            else:
+                reply = "ผมหาหัวข้อที่เกี่ยวข้องได้แล้ว แต่ยังไม่พบรายละเอียดเพียงพอสำหรับสรุปให้ครับ"
+                state.mode = "discover"
+                state.active_course_no = None
+                state.last_intent = "ask_summary"
+                state.last_answer_type = "summary_not_found"
+                state.last_answer = reply
+
+        else:
+            reply = "ต้องการให้สรุปเรื่องอะไรครับ 😊"
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_summary"
+            state.last_answer_type = "summary_needs_topic"
+            state.last_answer = reply
+
+        return type("Obj", (), {
+            "reply": reply,
+            "status": "learning" if state.mode == "learning" else "discover",
+            "reason": "intent_ask_summary",
+            "state": state,
+            "source": "ai_custom_summary",
             "active_video": active_video,
         })()
     
