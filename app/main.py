@@ -573,6 +573,7 @@ async def chat_ai_custom(req: ChatRequest_aicustom):
             reply=result.reply,
             state=result.state,
             source=result.source or "ai_custom",
+            active_video=getattr(result, "active_video", None),
         )
 
     except Exception as e:
@@ -581,6 +582,7 @@ async def chat_ai_custom(req: ChatRequest_aicustom):
             reply=f"DEBUG ERROR: {str(e)}",
             state=state,
             source="debug_error",
+            active_video=None,
         )
 
     finally:

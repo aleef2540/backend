@@ -5,16 +5,34 @@ from app.services.ai_service_aicustom import (
     reply_general,
     reply_learning,
     reply_with_topic,
+    reply_out_of_scope,
+    reply_ask_recommend_course,
+    reply_ask_concept_with_topic,
+    reply_ask_concept_no_topic,
+    
 )
 from app.schemas_aicustom import ChatState_aicustom
 
+
+def build_video_payload(video):
+    if not video:
+        return None
+
+    video_url = str(video.get("video_url") or "").strip()
+
+    return {
+        "video_part": video.get("video_part"),
+        "video_name": video.get("video_name"),
+        "video_id": video_url,
+        "embed_url": f"https://www.youtube.com/embed/{video_url}" if video_url else None
+    }
 
 def build_course_name_context(course_data) -> str:
     names = []
     seen = set()
 
     for row in course_data:
-        course_name = str(row[1] or "").strip()
+        course_name = str(row.get("course_name") or "").strip()
 
         if not course_name:
             continue
@@ -35,20 +53,107 @@ def find_script_by_topic(course_data, topic: str) -> str:
         return ""
 
     for row in course_data:
-        course_name = str(row[1] or "").strip()
-        script = str(row[2] or "").strip()
+        course_name = str(row.get("course_name") or "").strip()
+        script = str(row.get("script") or "").strip()
 
         if course_name.lower() == topic_clean:
             return script
 
     for row in course_data:
-        course_name = str(row[1] or "").strip().lower()
-        script = str(row[2] or "").strip()
+        course_name = str(row.get("course_name") or "").strip().lower()
+        script = str(row.get("script") or "").strip()
 
         if topic_clean in course_name or course_name in topic_clean:
             return script
 
     return ""
+
+def find_course_by_topic(course_data, topic: str):
+    topic_clean = str(topic or "").strip().lower()
+
+    if not topic_clean or topic_clean == "unknown":
+        return None
+
+    for row in course_data:
+        course_name = str(row.get("course_name") or "").strip()
+        if course_name.lower() == topic_clean:
+            return row
+
+    for row in course_data:
+        course_name = str(row.get("course_name") or "").strip().lower()
+        if topic_clean in course_name or course_name in topic_clean:
+            return row
+
+    return None
+
+def find_course_by_no(course_data, course_no):
+    if not course_no:
+        return None
+
+    try:
+        target_no = int(course_no)
+    except Exception:
+        return None
+
+    for row in course_data:
+        try:
+            row_no = int(row.get("course_no"))
+        except Exception:
+            row_no = None
+
+        if row_no == target_no:
+            return row
+
+    return None
+
+
+def detect_followup_type(message: str) -> str:
+    text = str(message or "").strip().lower()
+
+    summary_keywords = [
+        "สรุป", "ย่อ", "เอาแบบสั้น", "แบบสั้น", "สั้นๆ", "สั้น ๆ", "short summary"
+    ]
+    example_keywords = [
+        "ตัวอย่าง", "ยกตัวอย่าง", "example", "มีเคสไหม", "มีกรณีไหม"
+    ]
+    application_keywords = [
+        "เอาไปใช้", "นำไปใช้", "ใช้ยังไง", "ทำยังไง", "ควรทำยังไง",
+        "ปรับใช้", "ใช้กับงาน", "ใช้กับลูกทีม", "ประยุกต์ใช้"
+    ]
+    comparison_keywords = [
+        "ต่างจาก", "แตกต่าง", "เปรียบเทียบ", "เทียบกับ", "ดีกว่า", "เหมือนกันไหม"
+    ]
+    expand_keywords = [
+        "ขยาย", "เพิ่ม", "เพิ่มอีก", "อีกหน่อย", "เพิ่มเติม", "เล่าเพิ่ม", "อธิบายเพิ่ม"
+    ]
+
+    if any(k in text for k in summary_keywords):
+        return "summary"
+
+    if any(k in text for k in example_keywords):
+        return "example"
+
+    if any(k in text for k in application_keywords):
+        return "application"
+
+    if any(k in text for k in comparison_keywords):
+        return "comparison"
+
+    if any(k in text for k in expand_keywords):
+        return "expand"
+
+    return "expand"
+
+
+def map_followup_answer_type(followup_type: str) -> str:
+    mapping = {
+        "summary": "summary_given",
+        "example": "example_given",
+        "application": "application_given",
+        "comparison": "comparison_given",
+        "expand": "followup_expanded",
+    }
+    return mapping.get(followup_type, "followup_expanded")
 
 
 async def process_chat_aicustom(req, state, conn):
@@ -57,11 +162,11 @@ async def process_chat_aicustom(req, state, conn):
 
     user_message = (req.user_message or "").strip()
 
-    state.web_no = str(req.web_no) if req.web_no is not None else None
-    state.member_no = str(req.member_no) if req.member_no is not None else None
+    state.web_no = int(req.web_no) if req.web_no not in [None, ""] else None
+    state.member_no = int(req.member_no) if req.member_no not in [None, ""] else None
 
     if req.course_use:
-        state.course_use = [str(x).strip() for x in req.course_use if str(x).strip()]
+        state.course_use = [int(x) for x in req.course_use if str(x).strip()]
 
     course_use = state.course_use or []
 
@@ -69,6 +174,8 @@ async def process_chat_aicustom(req, state, conn):
         reply = "ขออภัยครับ ยังไม่พบรายการหลักสูตรที่อนุญาตให้ใช้งาน"
         state.last_user_message = user_message
         state.last_answer = reply
+        state.last_intent = "unknown"
+        state.last_answer_type = "no_course"
 
         return type("Obj", (), {
             "reply": reply,
@@ -76,6 +183,7 @@ async def process_chat_aicustom(req, state, conn):
             "reason": "empty_course_use",
             "state": state,
             "source": "ai_custom_no_course",
+            "active_video": None,
         })()
 
     course_data = get_course_data_by_nos(conn, course_use)
@@ -86,84 +194,92 @@ async def process_chat_aicustom(req, state, conn):
     # ==================================================
     # 1) ถ้ามี topic ค้างอยู่แล้ว ใช้ topic เดิมก่อนเลย
     # ==================================================
-    current_topic = str(getattr(state, "topic", "") or "").strip()
+    # current_topic = str(getattr(state, "topic", "") or "").strip()
 
-    if current_topic and current_topic != "unknown":
+    # if current_topic and current_topic != "unknown":
 
-        # 🔥 เช็คก่อนว่าผู้ใช้เปลี่ยน topic ไหม
-        intent_data = await detect_intent(user_message, course_context)
-        new_topic = intent_data.get("topic", "unknown")
+    #     # 🔥 เช็คก่อนว่าผู้ใช้เปลี่ยน topic ไหม
+    #     intent_data = await detect_intent(user_message, course_context)
+    #     new_topic = intent_data.get("topic", "unknown")
 
-        # ถ้ามี topic ใหม่ และไม่เหมือนเดิม -> เปลี่ยน topic
-        if new_topic and new_topic != "unknown" and new_topic != current_topic:
-            state.topic = new_topic
-            current_topic = new_topic
+    #     # ถ้ามี topic ใหม่ และไม่เหมือนเดิม -> เปลี่ยน topic
+    #     if new_topic and new_topic != "unknown" and new_topic != current_topic:
+    #         state.topic = new_topic
+    #         current_topic = new_topic
 
-        script = find_script_by_topic(course_data, current_topic)
+    #     script = find_script_by_topic(course_data, current_topic)
 
-        if script:
-            reply = await reply_with_topic(user_message, current_topic, script)
-        else:
-            reply = await reply_learning(user_message, course_context)
+    #     if script:
+    #         reply = await reply_with_topic(user_message, current_topic, script)
+    #     else:
+    #         reply = await reply_learning(user_message, course_context)
 
-        state.intent = "learning"
-        state.mode = "learning"
-        state.last_answer = reply
+    #     state.intent = "learning"
+    #     state.mode = "learning"
+    #     state.last_answer = reply
 
-        return type("Obj", (), {
-            "reply": reply,
-            "status": "learning",
-            "reason": "use_existing_topic",
-            "state": state,
-            "source": "ai_custom_topic_continue",
-        })()
+    #     return type("Obj", (), {
+    #         "reply": reply,
+    #         "status": "learning",
+    #         "reason": "use_existing_topic",
+    #         "state": state,
+    #         "source": "ai_custom_topic_continue",
+    #     })()
 
     # ==================================================
     # 2) ถ้าอยู่ใน learning อยู่แล้ว แต่ยังไม่มี topic
     #    ก็ไม่ต้อง detect ใหม่
     # ==================================================
-    if getattr(state, "intent", "") == "learning" or getattr(state, "mode", "") == "learning":
-        intent_data = await detect_intent(user_message, course_context)
-        topic = intent_data.get("topic", "unknown")
+    # if getattr(state, "intent", "") == "learning" or getattr(state, "mode", "") == "learning":
+    #     intent_data = await detect_intent(user_message, course_context)
+    #     topic = intent_data.get("topic", "unknown")
 
-        state.intent = "learning"
-        state.topic = topic
+    #     state.intent = "learning"
+    #     state.topic = topic
 
-        if topic and topic != "unknown":
-            script = find_script_by_topic(course_data, topic)
+    #     if topic and topic != "unknown":
+    #         script = find_script_by_topic(course_data, topic)
 
-            if script:
-                reply = await reply_with_topic(user_message, topic, script)
-            else:
-                reply = await reply_learning(user_message, course_context)
-        else:
-            reply = await reply_learning(user_message, course_context)
+    #         if script:
+    #             reply = await reply_with_topic(user_message, topic, script)
+    #         else:
+    #             reply = await reply_learning(user_message, course_context)
+    #     else:
+    #         reply = await reply_learning(user_message, course_context)
 
-        state.mode = "learning"
-        state.last_answer = reply
+    #     state.mode = "learning"
+    #     state.last_answer = reply
 
-        return type("Obj", (), {
-            "reply": reply,
-            "status": "learning",
-            "reason": "continue_learning_mode_detect_topic",
-            "state": state,
-            "source": "ai_custom_learning_continue",
-        })()
+    #     return type("Obj", (), {
+    #         "reply": reply,
+    #         "status": "learning",
+    #         "reason": "continue_learning_mode_detect_topic",
+    #         "state": state,
+    #         "source": "ai_custom_learning_continue",
+    #     })()
 
     # ==================================================
     # 3) ค่อย detect intent เฉพาะตอนยังไม่มี context เดิม
     # ==================================================
     intent_data = await detect_intent(user_message, course_context)
     intent = intent_data["intent"]
-    topic = intent_data["topic"]
+    detected_topic = intent_data.get("topic", "unknown")
 
+    reply = f"intent: {intent} | topic: {detected_topic}"
     state.intent = intent
-    state.topic = topic
+
+    if detected_topic and detected_topic != "unknown":
+        state.topic = detected_topic
+
+    topic = state.topic or "unknown"
+    active_video = None
 
     if intent == "greeting":
         reply = await reply_greeting(user_message, course_context)
         state.mode = "idle"
         state.last_answer = reply
+        state.last_intent = "greeting"
+        state.last_answer_type = "greeting_given"
 
         return type("Obj", (), {
             "reply": reply,
@@ -171,36 +287,207 @@ async def process_chat_aicustom(req, state, conn):
             "reason": "intent_greeting",
             "state": state,
             "source": "ai_custom_greeting",
+            "active_video": None,
         })()
 
-    # if intent == "general":
-    #     reply = await reply_general(user_message, course_context)
-    #     state.mode = "idle"
-    #     state.last_answer = reply
+    elif intent == "general":
+        reply = await reply_general(user_message, course_context)
+        state.mode = "idle"
+        state.last_answer = reply
+        state.last_intent = "general"
+        state.last_answer_type = "general_replied"
 
-    #     return type("Obj", (), {
-    #         "reply": reply,
-    #         "status": "general",
-    #         "reason": "intent_general",
-    #         "state": state,
-    #         "source": "ai_custom_general",
-    #     })()
+        return type("Obj", (), {
+            "reply": reply,
+            "status": "general",
+            "reason": "intent_general",
+            "state": state,
+            "source": "ai_custom_general",
+            "active_video": None,
+        })()
+    
+    elif intent == "out_of_scope":
+        reply = await reply_out_of_scope(user_message, course_context)
+        state.mode = "idle"
+        state.last_answer = reply
+        state.last_intent = "out_of_scope"
+        state.last_answer_type = "out_of_scope_replied"
+
+        return type("Obj", (), {
+            "reply": reply,
+            "status": "general",
+            "reason": "intent_general",
+            "state": state,
+            "source": "ai_custom_general",
+            "active_video": None,
+        })()
+    
+    elif intent == "ask_recommend_course":
+        reply = await reply_ask_recommend_course(user_message, course_context)
+        state.mode = "recommend"
+        state.last_answer = reply
+        state.last_intent = "ask_recommend_course"
+        state.last_answer_type = "recommendation_given"
+        state.active_course_no = None
+
+        return type("Obj", (), {
+            "reply": reply,
+            "status": "general",
+            "reason": "intent_general",
+            "state": state,
+            "source": "ai_custom_general",
+            "active_video": None,
+        })()
+    
+    elif intent == "ask_concept":
+
+        active_video = None
+
+        if topic != "unknown":
+
+            course_match = find_course_by_topic(course_data, topic)
+
+            print("DEBUG topic =", topic)
+            print("DEBUG course_match =", course_match)
+            print("DEBUG course_match type =", type(course_match))
+
+            if course_match:
+                state.active_course_no = course_match.get("course_no")
+
+                script = str(course_match.get("script") or "").strip()
+                videos = course_match.get("videos") or []
+
+                print("DEBUG script =", script)
+                print("DEBUG script type =", type(script))
+                print("DEBUG videos =", videos)
+
+                if script:
+                    reply = await reply_ask_concept_with_topic(user_message, topic, script)
+                    state.mode = "learning"
+                    state.topic = topic
+                    state.active_course_no = course_match.get("course_no")
+                    state.last_intent = "ask_concept"
+                    state.last_answer_type = "concept_explained"
+
+                    # ส่ง video ตัวแรกกลับไปพร้อม response
+                    active_video = build_video_payload(videos[0]) if videos else None
+
+                else:
+                    reply = await reply_ask_concept_no_topic(user_message, course_context)
+                    state.mode = "discover"
+                    state.active_course_no = None
+                    state.last_intent = "ask_concept"
+                    state.last_answer_type = "concept_not_found"
+
+            else:
+                reply = await reply_ask_concept_no_topic(user_message, course_context)
+                state.mode = "discover"
+                state.active_course_no = None
+                state.last_intent = "ask_concept"
+                state.last_answer_type = "concept_not_found"
+
+        else:
+            reply = await reply_ask_concept_no_topic(user_message, course_context)
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_concept"
+            state.last_answer_type = "concept_not_found"
+
+        state.last_answer = reply
+
+    elif intent == "ask_followup":
+
+        followup_type = detect_followup_type(user_message)
+
+        if not state.topic or state.topic == "unknown" or not state.last_answer:
+            reply = "ต้องการให้ขยายหรือสรุปเรื่องอะไรครับ 😊"
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_followup"
+            state.last_answer_type = "followup_needs_context"
+            state.last_answer = reply
+
+            return type("Obj", (), {
+                "reply": reply,
+                "status": "discover",
+                "reason": "followup_needs_context",
+                "state": state,
+                "source": "ai_custom_followup",
+                "active_video": None,
+            })()
+
+        course_match = None
+
+        if state.active_course_no:
+            course_match = find_course_by_no(course_data, state.active_course_no)
+
+        if not course_match and state.topic and state.topic != "unknown":
+            course_match = find_course_by_topic(course_data, state.topic)
+
+        print("DEBUG followup topic =", state.topic)
+        print("DEBUG followup active_course_no =", state.active_course_no)
+        print("DEBUG followup course_match =", course_match)
+        print("DEBUG followup_type =", followup_type)
+
+        if course_match:
+            script = str(course_match.get("script") or "").strip()
+            videos = course_match.get("videos") or []
+
+            if script:
+                followup_message = (
+                    f"{user_message}\n\n"
+                    f"[FOLLOWUP_TYPE]: {followup_type}\n"
+                    f"[PREVIOUS_ANSWER]: {state.last_answer or ''}\n"
+                    f"[PREVIOUS_INTENT]: {state.last_intent or ''}\n"
+                    f"[PREVIOUS_ANSWER_TYPE]: {state.last_answer_type or ''}"
+                )
+
+                reply = await reply_ask_concept_with_topic(
+                    followup_message,
+                    state.topic,
+                    script
+                )
+
+                state.mode = "learning"
+                state.active_course_no = course_match.get("course_no")
+                state.last_intent = "ask_followup"
+                state.last_answer_type = map_followup_answer_type(followup_type)
+                state.last_answer = reply
+
+                active_video = build_video_payload(videos[0]) if videos else None
+
+            else:
+                reply = "ผมหาหัวข้อที่ต่อเนื่องได้แล้ว แต่ยังไม่พบรายละเอียดเพียงพอสำหรับขยายคำตอบครับ"
+                state.mode = "discover"
+                state.active_course_no = None
+                state.last_intent = "ask_followup"
+                state.last_answer_type = "followup_no_script"
+                state.last_answer = reply
+
+        else:
+            reply = "ผมยังจับหัวข้อเดิมได้ไม่ชัด ช่วยพิมพ์ชื่อเรื่องที่ต้องการให้ขยายอีกนิดได้ไหมครับ 😊"
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_followup"
+            state.last_answer_type = "followup_no_course"
+            state.last_answer = reply
+    
 
     # ==================================================
     # 4) learning
     # ==================================================
-    if topic and topic != "unknown":
-        script = find_script_by_topic(course_data, topic)
+    # if topic and topic != "unknown":
+    #     script = find_script_by_topic(course_data, topic)
 
-        if script:
-            reply = await reply_with_topic(user_message, topic, script)
-        else:
-            reply = await reply_learning(user_message, course_context)
-    else:
-        reply = await reply_learning(user_message, course_context)
+    #     if script:
+    #         reply = await reply_with_topic(user_message, topic, script)
+    #     else:
+    #         reply = await reply_learning(user_message, course_context)
+    # else:
+    #     reply = await reply_learning(user_message, course_context)
 
-    state.mode = "learning"
-    state.last_answer = reply
+    # state.mode = "learning"
+    # state.last_answer = reply
 
     return type("Obj", (), {
         "reply": reply,
@@ -208,4 +495,5 @@ async def process_chat_aicustom(req, state, conn):
         "reason": "intent_learning",
         "state": state,
         "source": "ai_custom_learning",
+        "active_video": active_video,
     })()
