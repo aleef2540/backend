@@ -550,8 +550,8 @@ async def chat_ai_custom(req: ChatRequest_aicustom):
         state = chat_state_store_aicustom.get_state(req.web_no, req.member_no)
 
     # sync web/member ลง state
-    state.web_no = req.web_no
-    state.member_no = req.member_no
+    state.web_no = int(req.web_no) if req.web_no not in [None, ""] else None
+    state.member_no = int(req.member_no) if req.member_no not in [None, ""] else None
 
     # ถ้า frontend ส่ง course_use มา ให้เก็บลง state ทันที
     if req.course_use:

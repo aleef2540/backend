@@ -27,6 +27,7 @@ async def process_chat_aiselflearning(req, state, conn):
         })()
 
     scripts = [row[0] for row in course_data if row[0]]
+    course_name = [row[1] for row in course_data if row[1]]
     context = "\n\n".join(scripts[:3])
 
     system_prompt = f"""
@@ -59,12 +60,13 @@ async def process_chat_aiselflearning(req, state, conn):
 - ถ้า status = out_of_scope → ปฏิเสธอย่างนุ่มนวล และชวนกลับมาถามในประเด็นที่เกี่ยวกับหลักสูตร
 - ถ้า status = unclear → ขอให้ผู้ใช้เล่าเพิ่มหรือถามให้ชัดขึ้นแบบเป็นกันเอง
 
+ชื่อหลักสูตร: {course_name}
 ข้อมูลหลักสูตร:
 {context}
 """.strip()
 
     result = await call_openai_chat_full(
-        model="gpt-4.1-mini",
+        model="gpt-4.1-nano",
         system_prompt=system_prompt,
         user_prompt=user_message,
         temperature=0.3,
