@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 from typing import Any, Optional
+import httpx
+import json
 
 from dotenv import load_dotenv
 load_dotenv()
 from openai import OpenAI
 from decimal import Decimal, ROUND_HALF_UP
+from openai import AsyncOpenAI
 
 MODEL_PRICING = {
     "gpt-4.1-mini": {
@@ -68,6 +71,7 @@ if not OPENAI_API_KEY:
     raise RuntimeError("Missing OPENAI_API_KEY in .env")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+clients = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 
 async def call_openai_chat(
@@ -248,3 +252,84 @@ async def call_openai_embedding_full(
         "cost": cost,
         "raw": response.model_dump(),
     }
+
+async def call_openai_chat_stream_full(
+    *,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.3,
+    max_tokens: Optional[int] = None,
+    extra_payload: Optional[dict[str, Any]] = None,
+):
+    """
+    stream ข้อความทีละ chunk
+    และเมื่อจบแล้วจะ yield event ปิดท้ายเป็น dict
+    """
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "temperature": temperature,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+
+    if extra_payload:
+        payload.update(extra_payload)
+
+    full_content = ""
+    prompt_tokens = 0
+    completion_tokens = 0
+
+    stream = await clients.chat.completions.create(**payload)
+
+    async for chunk in stream:
+        try:
+            if getattr(chunk, "usage", None):
+                prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                completion_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+
+            if not getattr(chunk, "choices", None):
+                continue
+
+            delta = chunk.choices[0].delta
+            text = delta.content or ""
+
+            if text:
+                full_content += text
+                yield {
+                    "type": "chunk",
+                    "text": text,
+                }
+        except Exception as e:
+            print("OPENAI STREAM ERROR =", repr(e), flush=True)
+            continue
+
+    cost = calculate_cost(
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+
+    print(f"[TOKEN] total={cost['total_tokens']}")
+    print(f"         prompt={cost['prompt_tokens']} | completion={cost['completion_tokens']}")
+    print(f"[COST]  ${cost['total_cost_usd']} (~{cost['total_cost_thb']} บาท)")
+
+    yield {
+        "type": "done",
+        "content": full_content.strip(),
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+        "cost": cost,
+    }
+    

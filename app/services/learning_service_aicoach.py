@@ -9,11 +9,12 @@ from qdrant_client import QdrantClient
 
 client = OpenAI()
 
-
 from app.schemas_all import ChatState, LearningProgress
-# from app.services.ai_service import call_openai_chat
-from app.services.call_ai import call_openai_chat_full, call_openai_embedding_full
-
+from app.services.call_ai import (
+    call_openai_chat_full,
+    call_openai_chat_stream_full,
+    call_openai_embedding_full,
+)
 
 STATUS_ACTION_MAP = {
     "off_topic": "retry_same_step",
@@ -23,6 +24,52 @@ STATUS_ACTION_MAP = {
     "clear_but_needs_guidance": "probe_same_step",
     "clear_complete": "next_step",
 }
+
+
+async def _stream_text_response(
+    *,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.3,
+):
+    """
+    helper กลางสำหรับ stream ข้อความธรรมดา
+    คืน event รูปแบบ:
+    - {"type":"chunk","text":"..."}
+    - {"type":"done","content":"...","usage":...,"cost":...}
+    """
+    final_content = ""
+
+    async for item in call_openai_chat_stream_full(
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=temperature,
+    ):
+        if item.get("type") == "chunk":
+            text = item.get("text", "")
+            if text:
+                final_content += text
+                yield {
+                    "type": "chunk",
+                    "text": text,
+                }
+
+        elif item.get("type") == "done":
+            content = (item.get("content") or final_content).strip()
+            yield {
+                "type": "done",
+                "content": content,
+                "usage": item.get("usage"),
+                "cost": item.get("cost"),
+            }
+            return
+
+
+# ---------------------------------------------------
+# NON-STREAM VERSION (เผื่อยังมีจุดอื่นเรียกใช้อยู่)
+# ---------------------------------------------------
 
 async def generate_opening_ai_coach_question(
     fixed_question: str,
@@ -87,6 +134,7 @@ async def generate_opening_ai_coach_question(
 
     return content
 
+
 async def evaluate_user_answer(
     question: str,
     user_answer: str,
@@ -95,7 +143,6 @@ async def evaluate_user_answer(
     question = (question or "").strip()
     user_answer = (user_answer or "").strip()
 
-    # rule-based เบื้องต้น ช่วยลด token และกันเคสง่าย ๆ
     if not user_answer:
         return {
             "ok": True,
@@ -124,7 +171,6 @@ async def evaluate_user_answer(
             "raw": "",
         }
 
-    # กลุ่มคำที่สะท้อนว่า user กำลังคิด/ลังเล แต่ยัง engaged กับคำถาม
     reflecting_markers = [
         "บอกยาก", "ตอบยาก", "คิดยาก", "ขอคิดก่อน", "ยังไม่เคยคิด",
         "ไม่เคยมองแบบนี้", "น่าสนใจ", "ยากเหมือนกัน", "ยังตอบไม่ถูก",
@@ -298,7 +344,8 @@ async def evaluate_user_answer(
             "confidence": 0.0,
             "raw": "",
         }
-    
+
+
 async def generate_retry_same_step_question(
     fixed_question: str,
     user_answer: str,
@@ -377,6 +424,7 @@ async def generate_retry_same_step_question(
             content = f"ขอชวนกลับมาที่คำถามนี้อีกนิดนะครับ {fixed_question}"
 
     return content
+
 
 async def generate_probe_same_step_question(
     fixed_question: str,
@@ -481,6 +529,7 @@ async def generate_probe_same_step_question(
 
     return content
 
+
 async def generate_next_step_question(
     fixed_question: str,
     previous_answer: str = "",
@@ -528,3 +577,263 @@ async def generate_next_step_question(
         content = f"ขอบคุณครับ งั้นเราลองมองต่ออีกมุมหนึ่งนะครับ {fixed_question}"
 
     return content
+
+
+# ---------------------------------------------------
+# STREAM VERSION
+# ---------------------------------------------------
+
+async def generate_opening_ai_coach_question_stream(
+    fixed_question: str,
+    model: str = "gpt-4.1-mini",
+):
+    system_prompt = """คุณคือ AI Coach ที่กำลังเริ่มต้นบทสนทนากับผู้ใช้
+
+บทบาท:
+- คุณคือโค้ชที่ช่วยให้ผู้ใช้ “มองเห็นตัวเองได้ชัดขึ้น”
+- การสื่อสารต้องให้ความรู้สึกเป็นมิตร อบอุ่น และเป็นธรรมชาติ
+- ไม่ใช่การซักถาม แต่เป็นการชวนคุย
+
+หน้าที่:
+- เริ่มต้นด้วยการทักทายและแนะนำตัวสั้น ๆ
+- บอก purpose ของการคุย เช่น ช่วยให้มองเห็นตัวเอง/เป้าหมายชัดขึ้น
+- จากนั้น “ค่อย ๆ เชื่อม” ไปสู่คำถามหลักที่ระบบกำหนด
+
+หลักการสำคัญ:
+- ต้องทำให้เหมือนบทสนทนา ไม่ใช่แบบสอบถาม
+- ห้ามยิงคำถามทันทีโดยไม่มีบริบท
+- ต้องมีการเกริ่นก่อนถาม
+- ต้องใช้คำถามเพียง 1 คำถามเท่านั้น
+- ต้องคงความหมายของคำถามหลักไว้
+
+ลักษณะภาษา:
+- เป็นกันเอง ไม่ทางการเกินไป
+- ไม่แข็ง ไม่เป็นหุ่นยนต์
+- อ่านแล้วรู้สึกเหมือนมีคนคุยด้วยจริง
+- ใช้ภาษาไทย
+
+รูปแบบ:
+- ตอบเป็นย่อหน้าเดียว (Single paragraph)
+- ไม่ขึ้นบรรทัดใหม่
+- ความยาวประมาณ 2-4 ประโยค
+- ประโยคสุดท้ายต้องเป็นคำถาม
+
+ข้อห้าม:
+- ห้ามถามหลายคำถาม
+- ห้ามเปลี่ยนประเด็นของคำถามหลัก
+- ห้ามอธิบายยืดยาว
+- ห้ามใช้ bullet หรือ markdown
+
+รูปแบบคำตอบ:
+- ตอบเฉพาะข้อความที่ใช้แสดงกับผู้ใช้"""
+
+    user_prompt = f"""คำถามหลัก:
+{fixed_question}
+
+ช่วยปรับคำถามนี้ให้เป็นคำถามเปิดบทสนทนาแบบโค้ช"""
+
+    async for item in _stream_text_response(
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=0.4,
+    ):
+        yield item
+
+
+async def generate_retry_same_step_question_stream(
+    fixed_question: str,
+    user_answer: str,
+    status: str,
+    model: str = "gpt-4.1-mini",
+):
+    system_prompt = """คุณคือ AI Coach
+
+หน้าที่:
+- ผู้ใช้ยังตอบคำถามเดิมไม่ตรงพอ หรือสั้นเกินไป
+- ช่วยพาผู้ใช้กลับมาที่คำถามเดิมอย่างนุ่มนวลและเป็นธรรมชาติ
+- ก่อนถามใหม่ ให้สะท้อนหรือรับรู้สิ่งที่ผู้ใช้พูดสั้น ๆ ก่อน 1 ช่วง
+- จากนั้นค่อยเชื่อมกลับไปยังคำถามหลักที่ต้องถาม
+
+หลักการ:
+- ต้องยังยึดคำถามหลักเดิมเป็นแกน
+- ต้องสะท้อนคำตอบของผู้ใช้เล็กน้อย เช่น รับรู้ความรู้สึก สภาวะ หรือท่าทีที่ผู้ใช้พูด
+- แล้วค่อยถามกลับไปยังคำถามหลักอย่างเป็นธรรมชาติ
+- ถามเพียง 1 คำถามเท่านั้น
+- ภาษาไทย เป็นกันเอง อบอุ่น
+- ความยาว 1-2 ประโยคสั้น
+
+แนวทางสำคัญ:
+- ถ้าผู้ใช้ตอบสั้นหรือหลุดประเด็น ห้ามพาไปเปิดประเด็นใหม่ตามคำตอบนั้น
+- ให้ใช้คำตอบของผู้ใช้เพียงเพื่อ "สะท้อน" ไม่ใช่เปลี่ยนหัวข้อสนทนา
+- หลังสะท้อนแล้วต้องกลับมาที่คำถามหลักเดิมเสมอ
+
+ตัวอย่าง:
+คำถามหลัก: "คุณรู้สึกกับเป้าหมายอย่างไร?"
+ผู้ใช้ตอบ: "ง่วงมากๆ"
+
+คำตอบที่ดี:
+"ฟังดูเหมือนตอนนี้คุณอาจจะล้าอยู่พอสมควรเลยนะครับ ถ้าลองกลับมาที่เป้าหมายนี้ คุณรู้สึกกับมันอย่างไรบ้างครับ"
+
+คำตอบที่ไม่ดี:
+"มีอะไรที่ทำให้คุณรู้สึกเหนื่อยหรือง่วงในช่วงนี้ไหม?"
+เพราะเป็นการเปลี่ยนประเด็นจากคำถามหลัก
+
+ข้อห้าม:
+- ห้ามถามหลายคำถาม
+- ห้ามเปลี่ยนประเด็น
+- ห้ามเปิดหัวข้อใหม่จากคำตอบของผู้ใช้
+- ห้ามกดดันหรือฟังดูเหมือนจับผิด
+
+รูปแบบ:
+- ตอบเป็นข้อความที่พร้อมส่งให้ผู้ใช้ได้ทันที
+- ไม่ใช้ bullet หรือ markdown"""
+
+    user_prompt = f"""คำถามหลัก:
+{fixed_question}
+
+คำตอบของผู้ใช้:
+{user_answer}
+
+สถานะ:
+{status}
+
+ช่วยสร้างข้อความตอบกลับแบบโค้ช โดย:
+1. สะท้อนสิ่งที่ผู้ใช้พูดสั้น ๆ ก่อน
+2. จากนั้นค่อยพากลับมาที่คำถามหลักเดิม
+3. ห้ามเปลี่ยนหัวข้อ"""
+
+    async for item in _stream_text_response(
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=0.5,
+    ):
+        yield item
+
+
+async def generate_probe_same_step_question_stream(
+    fixed_question: str,
+    user_answer: str,
+    status: str,
+    model: str = "gpt-4.1-mini",
+):
+    system_prompt = """คุณคือ AI Coach
+
+หน้าที่:
+- ผู้ใช้ตอบอยู่ในประเด็นของคำถามหลักแล้ว
+- ให้ถามต่อใน step เดิม โดยต่อยอดจากคำตอบของผู้ใช้
+- ก่อนถามต่อ ให้สะท้อนหรือรับรู้สิ่งที่ผู้ใช้พูดสั้น ๆ ก่อน
+- จากนั้นค่อยถามต่ออย่างเป็นธรรมชาติ
+
+หลักการสำคัญ:
+- ต้องยังยึดคำถามหลักเดิมเป็นแกน
+- ห้ามถามซ้ำคำถามเดิมตรง ๆ
+- ต้องอิงจากคำตอบของผู้ใช้
+- ต้องช่วยให้ผู้ใช้คิดต่อได้ง่ายขึ้น
+- ถามเพียง 1 คำถามเท่านั้น
+- ภาษาไทย เป็นธรรมชาติ อบอุ่น แบบโค้ชคุยจริง
+
+แนวทางตามสถานะ:
+- partial:
+  ผู้ใช้ตอบถูกทางแล้ว แต่ยังกว้าง
+  → ให้สะท้อนสิ่งที่เขาตอบ แล้วถามเพื่อขยายให้ชัดขึ้น
+
+- reflecting:
+  ผู้ใช้กำลังคิด ลังเล หรือยังตอบไม่เต็ม
+  → ให้สะท้อนว่าเข้าใจว่าคำถามนี้อาจต้องใช้เวลาคิด แล้วช่วยคลี่ให้ตอบง่ายขึ้น
+
+- clear_but_needs_guidance:
+  ผู้ใช้ตอบชัดแล้วในระดับหนึ่ง
+  → ให้สะท้อนประเด็นสำคัญที่เขาพูด แล้วถามต่อเพื่อเจาะลึกความหมาย สาเหตุ หรือสิ่งที่สำคัญที่สุด
+
+ข้อห้าม:
+- ห้ามถามหลายคำถาม
+- ห้ามเปลี่ยนประเด็นจากคำถามหลัก
+- ห้ามเปิดหัวข้อใหม่จากคำตอบของผู้ใช้
+- ห้ามสรุปเกินจากที่ผู้ใช้พูด
+- ห้ามให้คำแนะนำยาว ๆ
+- ห้ามใช้ bullet หรือ markdown
+
+ตัวอย่าง:
+คำถามหลัก: "คุณรู้สึกกับเป้าหมายอย่างไร?"
+คำตอบผู้ใช้: "รู้สึกกังวลที่ต้องทำยอดขาย 10 ล้าน"
+สถานะ: clear_but_needs_guidance
+
+คำตอบที่ดี:
+"ผมได้ยินว่าคุณรู้สึกกังวลกับเป้าหมายนี้อยู่พอสมควรเลยนะครับ ถ้าลองมองลึกลงไปอีกนิด ความกังวลนี้มาจากเรื่องไหนมากที่สุดครับ"
+
+คำตอบที่ไม่ดี:
+"แล้วตอนนี้ยอดขายของคุณอยู่ที่เท่าไร?"
+เพราะพาออกจากแกนของคำถามเดิมเรื่องความรู้สึก
+
+รูปแบบคำตอบ:
+- ตอบเป็นข้อความที่พร้อมส่งให้ผู้ใช้ได้ทันที
+- 1-2 ประโยคสั้น
+- ต้องมีส่วนสะท้อนคำตอบของผู้ใช้ก่อน แล้วค่อยถามต่อ"""
+
+    user_prompt = f"""คำถามหลัก:
+{fixed_question}
+
+คำตอบของผู้ใช้:
+{user_answer}
+
+สถานะ:
+{status}
+
+ช่วยสร้างข้อความตอบกลับแบบโค้ช โดย:
+1. สะท้อนสิ่งที่ผู้ใช้พูดสั้น ๆ ก่อน
+2. จากนั้นค่อยถามต่อใน step เดิม
+3. ต้องยังยึดคำถามหลักเดิมเป็นแกน
+4. ห้ามเปลี่ยนหัวข้อ"""
+
+    async for item in _stream_text_response(
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=0.6,
+    ):
+        yield item
+
+
+async def generate_next_step_question_stream(
+    fixed_question: str,
+    previous_answer: str = "",
+    model: str = "gpt-4.1-mini",
+):
+    system_prompt = """คุณคือ AI Coach
+
+หน้าที่:
+- ผู้ใช้ตอบคำถามก่อนหน้าได้ครบแล้ว
+- ให้พาไปคำถามถัดไปอย่างลื่นไหล
+
+หลักการ:
+- สามารถมี transition สั้น ๆ ได้
+- ต้องใช้คำถามหลักใหม่เป็นแกน
+- ถามเพียง 1 คำถาม
+- ภาษาไทย เป็นธรรมชาติ
+
+ข้อห้าม:
+- ห้ามถามหลายคำถาม
+- ห้ามอธิบายยาว
+- ห้ามเปลี่ยนประเด็นของคำถามหลัก
+
+รูปแบบ:
+- 1-2 ประโยค
+- ประโยคสุดท้ายต้องเป็นคำถาม"""
+
+    user_prompt = f"""คำตอบก่อนหน้าของผู้ใช้:
+{previous_answer}
+
+คำถามถัดไป:
+{fixed_question}
+
+ช่วยสร้างคำถามถัดไปแบบลื่นไหล"""
+
+    async for item in _stream_text_response(
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=0.5,
+    ):
+        yield item

@@ -11,7 +11,7 @@ from openai import OpenAI
 
 from app.schemas_all import IntentResult
 
-from app.services.call_ai import call_openai_chat_full
+from app.services.call_ai import call_openai_chat_full, call_openai_chat_stream_full
 
 
 # ปรับตาม env ของคุณเอง

@@ -1,6 +1,8 @@
 from app.services.course_service_aiselflearning import get_course_data_by_no
-from app.services.call_ai import call_openai_chat_full
+from app.services.call_ai import call_openai_chat_full, call_openai_chat_stream_full
 from app.schemas_aiselflearning import ChatState_aiselflearning
+
+
 import json
 
 
@@ -104,3 +106,130 @@ async def process_chat_aiselflearning(req, state, conn):
     "state": state,
     "source": "ai_self_learning",
 })()
+
+async def process_chat_aiselflearning_stream(req, state, conn):
+    if state is None:
+        state = ChatState_aiselflearning()
+
+    user_message = req.user_message.strip()
+    course_no = req.OCourse_no
+
+    course_data = get_course_data_by_no(conn, course_no)
+
+    if not course_data:
+        reply = "ขออภัยครับ ไม่พบข้อมูลหลักสูตรนี้"
+        state.chat_id = req.chat_id
+        state.OCourse_no = course_no
+        state.last_user_message = user_message
+        state.last_answer = reply
+
+        yield {
+            "type": "chunk",
+            "text": reply,
+        }
+
+        yield {
+            "type": "done",
+            "reply": reply,
+            "status": "error",
+            "reason": "course_not_found",
+            "state": state,
+            "source": "ai_self_learning_no_data",
+        }
+        return
+
+    scripts = [row[0] for row in course_data if row[0]]
+    course_name = [row[1] for row in course_data if row[1]]
+    context = "\n\n".join(scripts[:3])
+
+    system_prompt = f"""
+คุณคือผู้ช่วยบนหน้า Self Learning ที่คุยกับผู้เรียนอย่างเป็นธรรมชาติ
+น้ำเสียงที่ต้องการ:
+- สุภาพ อบอุ่น เป็นกันเอง
+- ฟังเหมือนโค้ชหรือผู้ช่วยสอน ไม่ใช่ระบบอัตโนมัติ
+- อธิบายแบบเข้าใจง่าย กระชับ และช่วยให้ผู้เรียนรู้สึกว่าได้รับคำแนะนำจริง
+- หลีกเลี่ยงภาษาทางการแข็ง ๆ หรือภาษาที่ฟังเหมือนรายงาน
+- ถ้าตอบได้ ให้ตอบแบบลื่นและเป็นธรรมชาติ
+- ถ้าตอบไม่ได้หรือข้อมูลไม่พอ ให้บอกอย่างนุ่มนวลและตรงไปตรงมา
+
+ขอบเขตการตอบ:
+- ใช้ข้อมูลจากเนื้อหาหลักสูตรที่ให้ไว้เป็นหลัก
+- ห้ามแต่งข้อมูลเกินจากเนื้อหาที่มี
+- ถ้าคำถามไม่เกี่ยวกับหลักสูตร ให้ปฏิเสธอย่างนุ่มนวล และชวนกลับมาถามในประเด็นที่เกี่ยวกับหลักสูตร
+- ถ้าคำถามสั้นเกินไปหรือไม่ชัด ให้ขอให้ผู้ใช้เล่าเพิ่มหรือถามให้ชัดขึ้นแบบเป็นกันเอง
+
+ตอบเป็นข้อความธรรมดาเท่านั้น ห้ามตอบเป็น JSON
+
+ชื่อหลักสูตร: {course_name}
+ข้อมูลหลักสูตร:
+{context}
+""".strip()
+
+    final_reply = ""
+    final_usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    final_cost = None
+
+    try:
+        async for item in call_openai_chat_stream_full(
+            model="gpt-4.1-nano",
+            system_prompt=system_prompt,
+            user_prompt=user_message,
+            temperature=0.3,
+        ):
+            if item["type"] == "chunk":
+                text = item.get("text", "")
+                if text:
+                    final_reply += text
+                    yield {
+                        "type": "chunk",
+                        "text": text,
+                    }
+
+            elif item["type"] == "done":
+                final_reply = item.get("content", final_reply).strip()
+                final_usage = item.get("usage", final_usage)
+                final_cost = item.get("cost", None)
+
+    except Exception as e:
+        final_reply = "ขออภัยครับ ระบบไม่สามารถตอบได้ชั่วคราว"
+        yield {
+            "type": "chunk",
+            "text": final_reply,
+        }
+
+        state.chat_id = req.chat_id
+        state.OCourse_no = course_no
+        state.last_user_message = user_message
+        state.last_answer = final_reply
+
+        yield {
+            "type": "done",
+            "reply": final_reply,
+            "status": "error",
+            "reason": f"stream_error: {str(e)}",
+            "state": state,
+            "source": "ai_self_learning",
+            "usage": final_usage,
+            "cost": final_cost,
+        }
+        return
+
+    state.chat_id = req.chat_id
+    state.OCourse_no = course_no
+    state.last_user_message = user_message
+    state.last_answer = final_reply
+
+    yield {
+        "type": "done",
+        "reply": final_reply,
+        "status": "answered" if final_reply else "error",
+        "reason": "stream_completed" if final_reply else "empty_reply",
+        "state": state,
+        "source": "ai_self_learning",
+        "usage": final_usage,
+        "cost": final_cost,
+    }

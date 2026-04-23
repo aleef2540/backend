@@ -3,6 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import mysql.connector
 import sqlite3
 
+from fastapi.responses import StreamingResponse
+import json
+import time
+import asyncio
+
+
 
 def get_db_connection():
     return sqlite3.connect("ai_idp_script.db")
@@ -26,7 +32,7 @@ from app.services.chat_flow_aisale import process_chat_aisale
 
 from app.schemas_aicoach import ChatResponse_aicoach, ChatRequest_aicoach, ResetRequest_aicaoch, ChatState
 from app.state_store_aicoach import chat_state_store_aicoach
-from app.services.chat_flow_aicoach import process_chat_aicoach
+from app.services.chat_flow_aicoach import process_chat_aicoach, process_chat_aicoach_stream
 from app.constants.coach_questions import FIXED_QUESTIONS
 
 
@@ -47,7 +53,7 @@ from app.services.chat_db_aiweb import (
 
 from app.schemas_aiselflearning import ChatRequest_aiselflearning, ChatResponse_aiselflearning
 from app.state_store_aiselflearning import chat_state_store_aiselflearning
-from app.services.chat_flow_aiselflearning import process_chat_aiselflearning
+from app.services.chat_flow_aiselflearning import process_chat_aiselflearning,process_chat_aiselflearning_stream
 from app.services.chat_history_aiselflearning import insert_chat_history_aiselflearning
 
 from app.schemas_aicustom import (
@@ -56,7 +62,7 @@ from app.schemas_aicustom import (
     ResetRequest_aicustom,
 )
 from app.state_store_aicustom import chat_state_store_aicustom
-from app.services.chat_flow_aicustom import process_chat_aicustom
+from app.services.chat_flow_aicustom import process_chat_aicustom, process_chat_aicustom_stream
 
 #fortest api
 from app.services.ai_service import detect_intent
@@ -600,3 +606,457 @@ async def reset_chat_ai_custom(payload: ResetRequest_aicustom):
         "web_no": payload.web_no,
         "member_no": payload.member_no,
     }
+
+@app.post("/chat/ai-self-learning/stream")
+async def chat_ai_self_learning_stream(req: ChatRequest_aiselflearning):
+    req_start = time.time()
+    print(f"[ROUTE] /chat/ai-self-learning/stream START at {req_start:.3f}", flush=True)
+
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    user_message = req.user_message.strip()
+    req.user_message = user_message
+    conn_mysql = get_mysql_connection()
+
+    if req.state:
+        state = req.state
+    else:
+        state = chat_state_store_aiselflearning.get_state(req.chat_id)
+
+    print_debug("req.user_message", user_message)
+    print_debug("before state", state)
+    print_state("BEFORE STATE", state)
+    print(
+        f"[ROUTE] chat_id={req.chat_id} | OCourse_no={req.OCourse_no} | user_message={user_message!r}",
+        flush=True
+    )
+
+    async def event_generator():
+        stream_start = time.time()
+        final_reply = ""
+        final_status = "error"
+        final_reason = ""
+        final_state = state
+        final_source = "ai_self_learning"
+        chunk_count = 0
+
+        print(f"[STREAM] generator START at {stream_start:.3f}", flush=True)
+
+        try:
+            async for item in process_chat_aiselflearning_stream(req, state, conn_mysql):
+                now = time.time()
+                item_type = item.get("type")
+                print(
+                    f"[STREAM] item received at {now:.3f} (+{now - stream_start:.3f}s) | type={item_type}",
+                    flush=True
+                )
+
+                if item_type == "chunk":
+                    text = item.get("text", "")
+                    chunk_count += 1
+                    final_reply += text
+
+                    print(
+                        f"[STREAM] chunk#{chunk_count} len={len(text)} text={text!r}",
+                        flush=True
+                    )
+
+                    payload = json.dumps(
+                        {
+                            "type": "chunk",
+                            "text": text
+                        },
+                        ensure_ascii=False
+                    )
+
+                    before_yield = time.time()
+                    print(
+                        f"[STREAM] yielding chunk#{chunk_count} at {before_yield:.3f}",
+                        flush=True
+                    )
+
+                    yield f"data: {payload}\n\n"
+
+                    after_yield = time.time()
+                    print(
+                        f"[STREAM] yielded chunk#{chunk_count} done at {after_yield:.3f}",
+                        flush=True
+                    )
+
+                elif item_type == "done":
+                    final_reply = item.get("reply", final_reply)
+                    final_status = item.get("status", "answered")
+                    final_reason = item.get("reason", "")
+                    final_state = item.get("state", final_state)
+                    final_source = item.get("source", final_source)
+
+                    print(
+                        f"[STREAM] DONE received | final_status={final_status} | final_reason={final_reason!r} | reply_len={len(final_reply)}",
+                        flush=True
+                    )
+
+                    insert_chat_history_aiselflearning(
+                        conn=conn_mysql,
+                        chat_id=req.chat_id,
+                        course_no=req.OCourse_no,
+                        user_message=req.user_message,
+                        ai_reply=final_reply,
+                        ai_status=final_status,
+                        ai_reason=final_reason,
+                    )
+                    print("[STREAM] insert_chat_history_aiselflearning OK", flush=True)
+
+                    print_state("AFTER STATE", final_state)
+                    print_debug("final_reply", final_reply)
+
+                    chat_state_store_aiselflearning.set_state(req.chat_id, final_state)
+                    print("[STREAM] state saved OK", flush=True)
+
+                    payload = json.dumps(
+                        {
+                            "type": "done",
+                            "reply": final_reply,
+                            "status": final_status,
+                            "reason": final_reason,
+                            "state": final_state.model_dump() if hasattr(final_state, "model_dump") else None,
+                            "source": final_source,
+                            "chat_id": req.chat_id,
+                        },
+                        ensure_ascii=False
+                    )
+
+                    before_yield = time.time()
+                    print(f"[STREAM] yielding DONE at {before_yield:.3f}", flush=True)
+
+                    yield f"data: {payload}\n\n"
+
+                    after_yield = time.time()
+                    print(f"[STREAM] yielded DONE at {after_yield:.3f}", flush=True)
+
+        except Exception as e:
+            err_time = time.time()
+            print(f"[STREAM] EXCEPTION at {err_time:.3f}: {repr(e)}", flush=True)
+
+            payload = json.dumps(
+                {
+                    "type": "error",
+                    "message": str(e),
+                    "chat_id": req.chat_id,
+                },
+                ensure_ascii=False
+            )
+
+            print(f"[STREAM] yielding ERROR at {time.time():.3f}", flush=True)
+            yield f"data: {payload}\n\n"
+            print(f"[STREAM] yielded ERROR at {time.time():.3f}", flush=True)
+
+        finally:
+            end_time = time.time()
+            print(
+                f"[STREAM] FINALLY at {end_time:.3f} | total_chunks={chunk_count} | total_reply_len={len(final_reply)} | total_time={end_time - stream_start:.3f}s",
+                flush=True
+            )
+            try:
+                conn_mysql.close()
+                print("[STREAM] MySQL connection closed", flush=True)
+            except Exception as close_err:
+                print(f"[STREAM] MySQL close error: {repr(close_err)}", flush=True)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+@app.post("/chat/ai-custom/stream")
+async def chat_ai_custom_stream(req: ChatRequest_aicustom):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    user_message = req.user_message.strip()
+    req.user_message = user_message
+    conn_mysql = get_mysql_connection()
+
+    if req.state:
+        state = req.state
+    else:
+        state = chat_state_store_aicustom.get_state(req.web_no, req.member_no)
+
+    state.web_no = int(req.web_no) if req.web_no not in [None, ""] else None
+    state.member_no = int(req.member_no) if req.member_no not in [None, ""] else None
+
+    if req.course_use:
+        state.course_use = [str(x).strip() for x in req.course_use if str(x).strip()]
+
+    print(f"[ROUTE] /chat/ai-custom/stream START {time.time():.3f}", flush=True)
+    print_debug("req.user_message", user_message)
+    print_debug("before state", state)
+    print_state("BEFORE STATE", state)
+
+    async def event_generator():
+        stream_start = time.time()
+        final_reply = ""
+        final_state = state
+        final_source = "ai_custom"
+        final_active_video = None
+        chunk_count = 0
+
+        print(f"[STREAM] generator START {stream_start:.3f}", flush=True)
+
+        try:
+            async for item in process_chat_aicustom_stream(req, state, conn_mysql):
+                now = time.time()
+                item_type = item.get("type")
+                print(f"[STREAM] item at {now:.3f} (+{now - stream_start:.3f}s) type={item_type}", flush=True)
+
+                if item_type == "chunk":
+                    text = item.get("text", "")
+                    chunk_count += 1
+                    final_reply += text
+
+                    print(f"[STREAM] chunk#{chunk_count} len={len(text)} text={text!r}", flush=True)
+
+                    payload = json.dumps({
+                        "type": "chunk",
+                        "text": text
+                    }, ensure_ascii=False)
+
+                    print(f"[STREAM] yielding chunk#{chunk_count} at {time.time():.3f}", flush=True)
+                    yield f"data: {payload}\n\n"
+                    print(f"[STREAM] yielded chunk#{chunk_count} at {time.time():.3f}", flush=True)
+
+                elif item_type == "done":
+                    final_reply = item.get("reply", final_reply)
+                    final_state = item.get("state", final_state)
+                    final_source = item.get("source", final_source)
+                    final_active_video = item.get("active_video", final_active_video)
+
+                    print(f"[STREAM] DONE reply_len={len(final_reply)} active_video={bool(final_active_video)}", flush=True)
+
+                    chat_state_store_aicustom.set_state(req.web_no, req.member_no, final_state)
+
+                    payload = json.dumps({
+                        "type": "done",
+                        "reply": final_reply,
+                        "state": final_state.model_dump() if hasattr(final_state, "model_dump") else None,
+                        "source": final_source,
+                        "active_video": final_active_video
+                    }, ensure_ascii=False)
+
+                    print(f"[STREAM] yielding DONE at {time.time():.3f}", flush=True)
+                    yield f"data: {payload}\n\n"
+                    print(f"[STREAM] yielded DONE at {time.time():.3f}", flush=True)
+
+        except Exception as e:
+            print(f"[STREAM] EXCEPTION {repr(e)}", flush=True)
+            payload = json.dumps({
+                "type": "error",
+                "message": str(e)
+            }, ensure_ascii=False)
+            yield f"data: {payload}\n\n"
+
+        finally:
+            print(f"[STREAM] FINALLY total_chunks={chunk_count} total_reply_len={len(final_reply)} total_time={time.time() - stream_start:.3f}s", flush=True)
+            try:
+                conn_mysql.close()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+@app.post("/start/ai-coach/stream")
+async def start_ai_coach_stream(req: ChatRequest_aicoach):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    step = 1
+    fixed_question = FIXED_QUESTIONS[step]
+
+    state = ChatState(
+        step=0,
+        fixed_question=fixed_question,
+    )
+
+    chat_state_store_aicoach.set_state(req.web_no, req.member_no, state)
+
+    print(f"[ROUTE] /start/ai-coach/stream START {time.time():.3f}", flush=True)
+    print_state("BEFORE STATE", state)
+
+    async def event_generator():
+        stream_start = time.time()
+        final_reply = ""
+        final_state = state
+        final_source = "debug_chat"
+        chunk_count = 0
+
+        print(f"[STREAM] generator START {stream_start:.3f}", flush=True)
+
+        try:
+            async for item in process_chat_aicoach_stream(req, state):
+                item_type = item.get("type")
+
+                if item_type == "chunk":
+                    text = item.get("text", "")
+                    if text:
+                        final_reply += text
+                        chunk_count += 1
+
+                    payload = json.dumps({
+                        "type": "chunk",
+                        "text": text,
+                    }, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+
+                elif item_type == "done":
+                    final_reply = item.get("reply", final_reply) or final_reply
+                    final_state = item.get("state", final_state) or final_state
+                    final_source = item.get("source", final_source) or final_source
+
+                    chat_state_store_aicoach.set_state(req.web_no, req.member_no, final_state)
+
+                    payload = json.dumps({
+                        "type": "done",
+                        "reply": final_reply,
+                        "status": item.get("status"),
+                        "reason": item.get("reason"),
+                        "confidence": item.get("confidence"),
+                        "state": final_state.model_dump() if hasattr(final_state, "model_dump") else final_state.dict() if hasattr(final_state, "dict") else None,
+                        "source": final_source,
+                    }, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                    return
+
+                elif item_type == "error":
+                    payload = json.dumps({
+                        "type": "error",
+                        "message": item.get("message", "Unknown error")
+                    }, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                    return
+
+        except Exception as e:
+            print(f"[STREAM] EXCEPTION {repr(e)}", flush=True)
+            payload = json.dumps({
+                "type": "error",
+                "message": str(e)
+            }, ensure_ascii=False)
+            yield f"data: {payload}\n\n"
+
+        finally:
+            print(
+                f"[STREAM] FINALLY total_chunks={chunk_count} total_reply_len={len(final_reply)} total_time={time.time() - stream_start:.3f}s",
+                flush=True
+            )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/chat/ai-coach/stream")
+async def chat_ai_coach_stream(req: ChatRequest_aicoach):
+    if not req.user_message or not req.user_message.strip():
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    if req.state:
+        state = req.state
+    else:
+        state = chat_state_store_aicoach.get_state(req.web_no, req.member_no)
+
+    print(f"[ROUTE] /chat/ai-coach/stream START {time.time():.3f}", flush=True)
+    print_state("BEFORE STATE", state)
+
+    async def event_generator():
+        stream_start = time.time()
+        final_reply = ""
+        final_state = state
+        final_source = "debug_chat"
+        chunk_count = 0
+
+        print(f"[STREAM] generator START {stream_start:.3f}", flush=True)
+
+        try:
+            async for item in process_chat_aicoach_stream(req, state):
+                item_type = item.get("type")
+
+                if item_type == "chunk":
+                    text = item.get("text", "")
+                    if text:
+                        final_reply += text
+                        chunk_count += 1
+
+                    payload = json.dumps({
+                        "type": "chunk",
+                        "text": text,
+                    }, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+
+                elif item_type == "done":
+                    final_reply = item.get("reply", final_reply) or final_reply
+                    final_state = item.get("state", final_state) or final_state
+                    final_source = item.get("source", final_source) or final_source
+
+                    chat_state_store_aicoach.set_state(req.web_no, req.member_no, final_state)
+
+                    payload = json.dumps({
+                        "type": "done",
+                        "reply": final_reply,
+                        "status": item.get("status"),
+                        "reason": item.get("reason"),
+                        "confidence": item.get("confidence"),
+                        "state": final_state.model_dump() if hasattr(final_state, "model_dump") else final_state.dict() if hasattr(final_state, "dict") else None,
+                        "source": final_source,
+                    }, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                    return
+
+                elif item_type == "error":
+                    payload = json.dumps({
+                        "type": "error",
+                        "message": item.get("message", "Unknown error")
+                    }, ensure_ascii=False)
+                    yield f"data: {payload}\n\n"
+                    return
+
+        except Exception as e:
+            print(f"[STREAM] EXCEPTION {repr(e)}", flush=True)
+            payload = json.dumps({
+                "type": "error",
+                "message": str(e)
+            }, ensure_ascii=False)
+            yield f"data: {payload}\n\n"
+
+        finally:
+            print(
+                f"[STREAM] FINALLY total_chunks={chunk_count} total_reply_len={len(final_reply)} total_time={time.time() - stream_start:.3f}s",
+                flush=True
+            )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

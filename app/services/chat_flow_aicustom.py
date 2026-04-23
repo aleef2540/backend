@@ -9,10 +9,19 @@ from app.services.ai_service_aicustom import (
     reply_ask_recommend_course,
     reply_ask_concept_with_topic,
     reply_ask_concept_no_topic,
+
+    reply_greeting_stream,
+    reply_general_stream,
+    reply_out_of_scope_stream,
+    reply_ask_recommend_course_stream,
+    reply_ask_concept_with_topic_stream,
+    reply_ask_concept_no_topic_stream,
+    
     
 )
 from app.schemas_aicustom import ChatState_aicustom
 import random
+
 
 
 def build_video_payload(video):
@@ -668,3 +677,588 @@ async def process_chat_aicustom(req, state, conn):
         "source": "ai_custom_learning",
         "active_video": active_video,
     })()
+
+async def process_chat_aicustom_stream(req, state, conn):
+    if state is None:
+        state = ChatState_aicustom()
+
+    user_message = (req.user_message or "").strip()
+
+    state.web_no = int(req.web_no) if req.web_no not in [None, ""] else None
+    state.member_no = int(req.member_no) if req.member_no not in [None, ""] else None
+
+    if req.course_use:
+        state.course_use = [int(x) for x in req.course_use if str(x).strip()]
+
+    course_use = state.course_use or []
+
+    if not course_use:
+        reply = "ขออภัยครับ ยังไม่พบรายการหลักสูตรที่อนุญาตให้ใช้งาน"
+        state.last_user_message = user_message
+        state.last_answer = reply
+        state.last_intent = "unknown"
+        state.last_answer_type = "no_course"
+
+        yield {"type": "chunk", "text": reply}
+        yield {
+            "type": "done",
+            "reply": reply,
+            "status": "no_course",
+            "reason": "empty_course_use",
+            "state": state,
+            "source": "ai_custom_no_course",
+            "active_video": None,
+        }
+        return
+
+    course_data = get_course_data_by_nos(conn, course_use)
+    course_context = build_course_name_context(course_data)
+
+    state.last_user_message = user_message
+
+    intent_data = await detect_intent(user_message, course_context)
+    intent = intent_data["intent"]
+    detected_topic = intent_data.get("topic", "unknown")
+
+    state.intent = intent
+
+    if detected_topic and detected_topic != "unknown":
+        state.topic = detected_topic
+
+    topic = state.topic or "unknown"
+    active_video = None
+
+    if intent == "greeting":
+        final_reply = ""
+        async for item in reply_greeting_stream(user_message, course_context):
+            if item["type"] == "chunk":
+                text = item.get("text", "")
+                final_reply += text
+                yield {"type": "chunk", "text": text}
+            elif item["type"] == "done":
+                final_reply = item.get("content", final_reply)
+
+        state.mode = "idle"
+        state.last_answer = final_reply
+        state.last_intent = "greeting"
+        state.last_answer_type = "greeting_given"
+
+        yield {
+            "type": "done",
+            "reply": final_reply,
+            "status": "greeting",
+            "reason": "intent_greeting",
+            "state": state,
+            "source": "ai_custom_greeting",
+            "active_video": None,
+        }
+        return
+
+    elif intent == "general":
+        final_reply = ""
+        async for item in reply_general_stream(user_message, course_context):
+            if item["type"] == "chunk":
+                text = item.get("text", "")
+                final_reply += text
+                yield {"type": "chunk", "text": text}
+            elif item["type"] == "done":
+                final_reply = item.get("content", final_reply)
+
+        state.mode = "idle"
+        state.last_answer = final_reply
+        state.last_intent = "general"
+        state.last_answer_type = "general_replied"
+
+        yield {
+            "type": "done",
+            "reply": final_reply,
+            "status": "general",
+            "reason": "intent_general",
+            "state": state,
+            "source": "ai_custom_general",
+            "active_video": None,
+        }
+        return
+
+    elif intent == "out_of_scope":
+        final_reply = ""
+        async for item in reply_out_of_scope_stream(user_message, course_context):
+            if item["type"] == "chunk":
+                text = item.get("text", "")
+                final_reply += text
+                yield {"type": "chunk", "text": text}
+            elif item["type"] == "done":
+                final_reply = item.get("content", final_reply)
+
+        state.mode = "idle"
+        state.last_answer = final_reply
+        state.last_intent = "out_of_scope"
+        state.last_answer_type = "out_of_scope_replied"
+
+        yield {
+            "type": "done",
+            "reply": final_reply,
+            "status": "general",
+            "reason": "intent_general",
+            "state": state,
+            "source": "ai_custom_general",
+            "active_video": None,
+        }
+        return
+
+    elif intent == "ask_recommend_course":
+        final_reply = ""
+        async for item in reply_ask_recommend_course_stream(user_message, course_context):
+            if item["type"] == "chunk":
+                text = item.get("text", "")
+                final_reply += text
+                yield {"type": "chunk", "text": text}
+            elif item["type"] == "done":
+                final_reply = item.get("content", final_reply)
+
+        state.mode = "recommend"
+        state.last_answer = final_reply
+        state.last_intent = "ask_recommend_course"
+        state.last_answer_type = "recommendation_given"
+        state.active_course_no = None
+
+        yield {
+            "type": "done",
+            "reply": final_reply,
+            "status": "general",
+            "reason": "intent_general",
+            "state": state,
+            "source": "ai_custom_general",
+            "active_video": None,
+        }
+        return
+
+    elif intent == "ask_concept":
+        active_video = None
+        resolved_topic = topic if topic != "unknown" else state.topic
+
+        if resolved_topic and resolved_topic != "unknown":
+            course_match = None
+
+            if state.active_course_no:
+                course_match = find_course_by_no(course_data, state.active_course_no)
+
+            if not course_match:
+                course_match = find_course_by_topic(course_data, resolved_topic)
+
+            print("DEBUG topic =", topic)
+            print("DEBUG state.topic =", state.topic)
+            print("DEBUG resolved_topic =", resolved_topic)
+            print("DEBUG course_match =", course_match)
+            print("DEBUG course_match type =", type(course_match))
+
+            if course_match:
+                state.active_course_no = course_match.get("course_no")
+
+                script = str(course_match.get("script") or "").strip()
+                videos = course_match.get("videos") or []
+
+                print("DEBUG script =", script)
+                print("DEBUG script type =", type(script))
+                print("DEBUG videos =", videos)
+
+                if script:
+                    final_reply = ""
+                    async for item in reply_ask_concept_with_topic_stream(user_message, resolved_topic, script):
+                        if item["type"] == "chunk":
+                            text = item.get("text", "")
+                            final_reply += text
+                            yield {"type": "chunk", "text": text}
+                        elif item["type"] == "done":
+                            final_reply = item.get("content", final_reply)
+
+                    state.mode = "learning"
+                    state.topic = resolved_topic
+                    state.active_course_no = course_match.get("course_no")
+                    state.last_intent = "ask_concept"
+                    state.last_answer_type = "concept_explained"
+                    state.last_answer = final_reply
+
+                    active_video = build_video_payload(videos[0]) if videos else None
+
+                    yield {
+                        "type": "done",
+                        "reply": final_reply,
+                        "status": "learning",
+                        "reason": "intent_learning",
+                        "state": state,
+                        "source": "ai_custom_learning",
+                        "active_video": active_video,
+                    }
+                    return
+
+        final_reply = ""
+        async for item in reply_ask_concept_no_topic_stream(user_message, course_context):
+            if item["type"] == "chunk":
+                text = item.get("text", "")
+                final_reply += text
+                yield {"type": "chunk", "text": text}
+            elif item["type"] == "done":
+                final_reply = item.get("content", final_reply)
+
+        state.mode = "discover"
+        state.active_course_no = None
+        state.last_intent = "ask_concept"
+        state.last_answer_type = "concept_not_found"
+        state.last_answer = final_reply
+
+        yield {
+            "type": "done",
+            "reply": final_reply,
+            "status": "discover",
+            "reason": "intent_ask_concept",
+            "state": state,
+            "source": "ai_custom_concept",
+            "active_video": None,
+        }
+        return
+
+    elif intent == "ask_followup":
+        followup_type = detect_followup_type(user_message)
+
+        if not state.topic or state.topic == "unknown" or not state.last_answer:
+            reply = "ต้องการให้ขยายหรือสรุปเรื่องอะไรครับ 😊"
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_followup"
+            state.last_answer_type = "followup_needs_context"
+            state.last_answer = reply
+
+            yield {"type": "chunk", "text": reply}
+            yield {
+                "type": "done",
+                "reply": reply,
+                "status": "discover",
+                "reason": "followup_needs_context",
+                "state": state,
+                "source": "ai_custom_followup",
+                "active_video": None,
+            }
+            return
+
+        course_match = None
+
+        if state.active_course_no:
+            course_match = find_course_by_no(course_data, state.active_course_no)
+
+        if not course_match and state.topic and state.topic != "unknown":
+            course_match = find_course_by_topic(course_data, state.topic)
+
+        print("DEBUG followup topic =", state.topic)
+        print("DEBUG followup active_course_no =", state.active_course_no)
+        print("DEBUG followup course_match =", course_match)
+        print("DEBUG followup_type =", followup_type)
+
+        if course_match:
+            script = str(course_match.get("script") or "").strip()
+            videos = course_match.get("videos") or []
+
+            if script:
+                followup_message = (
+                    f"{user_message}\n\n"
+                    f"[FOLLOWUP_TYPE]: {followup_type}\n"
+                    f"[PREVIOUS_ANSWER]: {state.last_answer or ''}\n"
+                    f"[PREVIOUS_INTENT]: {state.last_intent or ''}\n"
+                    f"[PREVIOUS_ANSWER_TYPE]: {state.last_answer_type or ''}"
+                )
+
+                final_reply = ""
+                async for item in reply_ask_concept_with_topic_stream(
+                    followup_message,
+                    state.topic,
+                    script
+                ):
+                    if item["type"] == "chunk":
+                        text = item.get("text", "")
+                        final_reply += text
+                        yield {"type": "chunk", "text": text}
+                    elif item["type"] == "done":
+                        final_reply = item.get("content", final_reply)
+
+                state.mode = "learning"
+                state.active_course_no = course_match.get("course_no")
+                state.last_intent = "ask_followup"
+                state.last_answer_type = map_followup_answer_type(followup_type)
+                state.last_answer = final_reply
+
+                if len(videos) > 1:
+                    active_video = build_video_payload(random.choice(videos[1:]))
+                elif len(videos) == 1:
+                    active_video = build_video_payload(videos[0])
+                else:
+                    active_video = None
+
+                yield {
+                    "type": "done",
+                    "reply": final_reply,
+                    "status": "learning",
+                    "reason": "intent_ask_followup",
+                    "state": state,
+                    "source": "ai_custom_followup",
+                    "active_video": active_video,
+                }
+                return
+
+            reply = "ผมหาหัวข้อที่ต่อเนื่องได้แล้ว แต่ยังไม่พบรายละเอียดเพียงพอสำหรับขยายคำตอบครับ"
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_followup"
+            state.last_answer_type = "followup_no_script"
+            state.last_answer = reply
+
+            yield {"type": "chunk", "text": reply}
+            yield {
+                "type": "done",
+                "reply": reply,
+                "status": "discover",
+                "reason": "followup_no_script",
+                "state": state,
+                "source": "ai_custom_followup",
+                "active_video": None,
+            }
+            return
+
+        reply = "ผมยังจับหัวข้อเดิมได้ไม่ชัด ช่วยพิมพ์ชื่อเรื่องที่ต้องการให้ขยายอีกนิดได้ไหมครับ 😊"
+        state.mode = "discover"
+        state.active_course_no = None
+        state.last_intent = "ask_followup"
+        state.last_answer_type = "followup_no_course"
+        state.last_answer = reply
+
+        yield {"type": "chunk", "text": reply}
+        yield {
+            "type": "done",
+            "reply": reply,
+            "status": "discover",
+            "reason": "followup_no_course",
+            "state": state,
+            "source": "ai_custom_followup",
+            "active_video": None,
+        }
+        return
+
+    elif intent == "ask_application":
+        course_match = None
+
+        if state.active_course_no:
+            course_match = find_course_by_no(course_data, state.active_course_no)
+
+        if not course_match and topic and topic != "unknown":
+            course_match = find_course_by_topic(course_data, topic)
+
+        if not course_match and state.topic and state.topic != "unknown":
+            course_match = find_course_by_topic(course_data, state.topic)
+
+        print("DEBUG ask_application topic =", topic)
+        print("DEBUG ask_application state.topic =", state.topic)
+        print("DEBUG ask_application active_course_no =", state.active_course_no)
+        print("DEBUG ask_application course_match =", course_match)
+
+        if course_match:
+            script = str(course_match.get("script") or "").strip()
+            videos = course_match.get("videos") or []
+
+            if script:
+                resolved_topic = topic if topic and topic != "unknown" else state.topic
+                application_message = build_application_message(user_message, state)
+
+                final_reply = ""
+                async for item in reply_ask_concept_with_topic_stream(
+                    application_message,
+                    resolved_topic,
+                    script
+                ):
+                    if item["type"] == "chunk":
+                        text = item.get("text", "")
+                        final_reply += text
+                        yield {"type": "chunk", "text": text}
+                    elif item["type"] == "done":
+                        final_reply = item.get("content", final_reply)
+
+                state.mode = "learning"
+                state.topic = resolved_topic
+                state.active_course_no = course_match.get("course_no")
+                state.last_intent = "ask_application"
+                state.last_answer_type = "application_given"
+                state.last_answer = final_reply
+
+                if len(videos) > 1:
+                    active_video = build_video_payload(random.choice(videos[1:]))
+                elif len(videos) == 1:
+                    active_video = build_video_payload(videos[0])
+                else:
+                    active_video = None
+
+                yield {
+                    "type": "done",
+                    "reply": final_reply,
+                    "status": "learning",
+                    "reason": "intent_ask_application",
+                    "state": state,
+                    "source": "ai_custom_application",
+                    "active_video": active_video,
+                }
+                return
+
+            reply = "ผมหัวข้อที่เกี่ยวข้องได้แล้ว แต่ยังไม่พบรายละเอียดเพียงพอสำหรับอธิบายการนำไปใช้ครับ"
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_application"
+            state.last_answer_type = "application_not_found"
+            state.last_answer = reply
+
+            yield {"type": "chunk", "text": reply}
+            yield {
+                "type": "done",
+                "reply": reply,
+                "status": "discover",
+                "reason": "application_not_found",
+                "state": state,
+                "source": "ai_custom_application",
+                "active_video": None,
+            }
+            return
+
+        reply = "ต้องการให้นำเรื่องอะไรไปใช้ครับ 😊"
+        state.mode = "discover"
+        state.active_course_no = None
+        state.last_intent = "ask_application"
+        state.last_answer_type = "application_needs_topic"
+        state.last_answer = reply
+
+        yield {"type": "chunk", "text": reply}
+        yield {
+            "type": "done",
+            "reply": reply,
+            "status": "discover",
+            "reason": "application_needs_topic",
+            "state": state,
+            "source": "ai_custom_application",
+            "active_video": None,
+        }
+        return
+
+    elif intent == "ask_summary":
+        course_match = None
+
+        if state.active_course_no:
+            course_match = find_course_by_no(course_data, state.active_course_no)
+
+        if not course_match and topic and topic != "unknown":
+            course_match = find_course_by_topic(course_data, topic)
+
+        if not course_match and state.topic and state.topic != "unknown":
+            course_match = find_course_by_topic(course_data, state.topic)
+
+        print("DEBUG ask_summary topic =", topic)
+        print("DEBUG ask_summary state.topic =", state.topic)
+        print("DEBUG ask_summary active_course_no =", state.active_course_no)
+        print("DEBUG ask_summary course_match =", course_match)
+
+        if course_match:
+            script = str(course_match.get("script") or "").strip()
+            videos = course_match.get("videos") or []
+
+            if script:
+                resolved_topic = topic if topic and topic != "unknown" else state.topic
+                summary_message = build_summary_message(user_message, state)
+
+                final_reply = ""
+                async for item in reply_ask_concept_with_topic_stream(
+                    summary_message,
+                    resolved_topic,
+                    script
+                ):
+                    if item["type"] == "chunk":
+                        text = item.get("text", "")
+                        final_reply += text
+                        yield {"type": "chunk", "text": text}
+                    elif item["type"] == "done":
+                        final_reply = item.get("content", final_reply)
+
+                state.mode = "learning"
+                state.topic = resolved_topic
+                state.active_course_no = course_match.get("course_no")
+                state.last_intent = "ask_summary"
+                state.last_answer_type = "summary_given"
+                state.last_answer = final_reply
+
+                active_video = build_video_payload(videos[-1]) if videos else None
+
+                yield {
+                    "type": "done",
+                    "reply": final_reply,
+                    "status": "learning",
+                    "reason": "intent_ask_summary",
+                    "state": state,
+                    "source": "ai_custom_summary",
+                    "active_video": active_video,
+                }
+                return
+
+            reply = "ผมหาหัวข้อที่เกี่ยวข้องได้แล้ว แต่ยังไม่พบรายละเอียดเพียงพอสำหรับสรุปให้ครับ"
+            state.mode = "discover"
+            state.active_course_no = None
+            state.last_intent = "ask_summary"
+            state.last_answer_type = "summary_not_found"
+            state.last_answer = reply
+
+            yield {"type": "chunk", "text": reply}
+            yield {
+                "type": "done",
+                "reply": reply,
+                "status": "discover",
+                "reason": "summary_not_found",
+                "state": state,
+                "source": "ai_custom_summary",
+                "active_video": None,
+            }
+            return
+
+        reply = "ต้องการให้สรุปเรื่องอะไรครับ 😊"
+        state.mode = "discover"
+        state.active_course_no = None
+        state.last_intent = "ask_summary"
+        state.last_answer_type = "summary_needs_topic"
+        state.last_answer = reply
+
+        yield {"type": "chunk", "text": reply}
+        yield {
+            "type": "done",
+            "reply": reply,
+            "status": "discover",
+            "reason": "summary_needs_topic",
+            "state": state,
+            "source": "ai_custom_summary",
+            "active_video": None,
+        }
+        return
+
+    final_reply = ""
+    async for item in reply_learning_stream(user_message, course_context):
+        if item["type"] == "chunk":
+            text = item.get("text", "")
+            final_reply += text
+            yield {"type": "chunk", "text": text}
+        elif item["type"] == "done":
+            final_reply = item.get("content", final_reply)
+
+    state.mode = "learning"
+    state.last_answer = final_reply
+    state.last_intent = intent
+    state.last_answer_type = "learning_replied"
+
+    yield {
+        "type": "done",
+        "reply": final_reply,
+        "status": "learning",
+        "reason": "intent_learning",
+        "state": state,
+        "source": "ai_custom_learning",
+        "active_video": active_video,
+    }

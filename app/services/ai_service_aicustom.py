@@ -1,6 +1,6 @@
 import json
 import re
-from app.services.ai_service import call_openai_chat_full
+from app.services.ai_service import call_openai_chat_full, call_openai_chat_stream_full
 
 
 def clean_json(text: str) -> str:
@@ -10,6 +10,46 @@ def clean_json(text: str) -> str:
 
 import json
 
+async def _stream_text_response(
+    *,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.3,
+):
+    """
+    helper กลางสำหรับ stream ข้อความธรรมดา
+    คืน event รูปแบบ:
+    - {"type":"chunk","text":"..."}
+    - {"type":"done","content":"...","usage":...,"cost":...}
+    """
+    final_content = ""
+
+    async for item in call_openai_chat_stream_full(
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=temperature,
+    ):
+        if item.get("type") == "chunk":
+            text = item.get("text", "")
+            if text:
+                final_content += text
+                yield {
+                    "type": "chunk",
+                    "text": text,
+                }
+
+        elif item.get("type") == "done":
+            content = (item.get("content") or final_content).strip()
+            yield {
+                "type": "done",
+                "content": content,
+                "usage": item.get("usage"),
+                "cost": item.get("cost"),
+            }
+            return
+        
 async def detect_intent(user_message: str, course_data) -> dict:
     system_prompt = f"""
     คุณคือ AI ที่ทำหน้าที่จำแนก intent ของข้อความผู้ใช้ สำหรับระบบ Self Learning
@@ -489,3 +529,231 @@ async def reply_with_topic(user_message: str, topic: str, script: str) -> str:
     )
 
     return (result.get("content") or "").strip()
+
+async def reply_greeting_stream(user_message: str, course_data):
+
+    system_prompt = f"""
+    คุณคือ AI ผู้ช่วยเรียนรู้ เพศชาย
+
+    หน้าที่:
+    - ทักทายผู้ใช้อย่างเป็นกันเองและเป็นธรรมชาติ
+    - แจ้งสั้น ๆ ว่าคุณช่วยเรื่องเรียนรู้จากหลักสูตรต่าง ๆ ได้
+    - ชวนผู้ใช้พูดคุยถึงสิ่งที่อยากพัฒนา
+    - ถ้าเหมาะสม ให้แทรกชื่อหัวข้อหลักสูตรจริงอย่างนุ่มนวล
+
+    ข้อมูลหลักสูตร:
+    {course_data}
+
+    ข้อกำหนด:
+    - ตอบสั้น ๆ 2-3 ประโยค
+    - ใช้ภาษาไทยที่อบอุ่นและไม่เป็นทางการมาก
+    - หลีกเลี่ยงการลิสต์หัวข้อหรืออธิบายเนื้อหาอย่างละเอียด
+    - ประโยคสุดท้ายต้องเป็นคำถามเปิด
+    - หลีกเลี่ยงการใช้ถ้อยคำซ้ำในแต่ละครั้ง
+    - หลีกเลี่ยงประโยคที่เหมือนสำเร็จรูป
+    - ตอบแบบสดใหม่ตามข้อความของผู้ใช้ในรอบนั้น
+
+    แนวทาง:
+    - ประโยคแรก = ทักทายหรือรับฟัง
+    - ประโยคที่สอง = บอกว่าช่วยสรุปหรืออธิบายจากหลักสูตรได้ พร้อมยกตัวอย่างหัวข้อหลักสูตรที่เกี่ยวข้อง
+    - ประโยคสุดท้าย = เชิญชวนให้ผู้ใช้บอกเรื่องที่อยากพัฒนาหรืออยากรู้เพิ่มเติม
+    """.strip()
+
+    async for item in _stream_text_response(
+        model="gpt-4.1-mini",
+        system_prompt=system_prompt,
+        user_prompt=user_message,
+        temperature=0.7,
+    ):
+        yield item
+
+async def reply_general_stream(user_message: str, course_data):
+
+    system_prompt = f"""
+    คุณคือ AI ผู้ช่วยเรียนรู้ เพศชาย
+
+    หน้าที่:
+    - ตอบข้อความทั่วไปของผู้ใช้แบบเป็นธรรมชาติ
+    - ถ้าผู้ใช้แสดงอารมณ์ ให้สะท้อนความรู้สั้น ๆ
+    - ค่อย ๆ ชวนเข้าสู่การเรียนรู้
+    - สามารถแนะนำชื่อหลักสูตรที่มีอยู่ได้ เพื่อให้ผู้ใช้เลือกว่าจะคุยต่อเรื่องไหน
+
+    ข้อมูลหลักสูตร (ใช้ได้เฉพาะนี้เท่านั้น):
+    {course_data}
+
+    ข้อกำหนดสำคัญ:
+    - ตอบ 2-3 ประโยค
+    - ภาษาธรรมชาติ เป็นมิตร
+
+    กฎ:
+    - ห้ามวิเคราะห์หรือเดาสถานการณ์ของผู้ใช้
+    - ห้ามเสนอเนื้อหาวิชาการ
+    - ห้ามสร้างชื่อหัวข้อหรือชื่อหลักสูตรใหม่เองเด็ดขาด
+
+    - ถ้าจะพูดถึงหลักสูตร:
+    → ต้องใช้ชื่อจากรายการที่ให้เท่านั้น
+    → พูดได้แค่ “ชื่อหลักสูตร”
+    → ห้ามอธิบายว่าแต่ละหลักสูตรสอนอะไร
+    → ห้ามตีความจากชื่อหลักสูตรเกินกว่าที่มี
+    → ใช้ได้ในลักษณะชวนเลือก เช่น “ผมมีหลักสูตร ...”
+    → ถ้าไม่แน่ใจหรือไม่เหมาะสม ก็ไม่ต้องพูดถึงหลักสูตร
+
+    - ถ้าผู้ใช้แสดงอารมณ์:
+    → ให้ตอบสั้น เช่น "เข้าใจเลยครับ", "เป็นกำลังใจให้นะครับ"
+    → ห้ามขยายความ
+    → ห้ามรีบสอน
+
+    - ประโยคสุดท้ายต้องเป็นคำถามเปิด
+    """.strip()
+
+    async for item in _stream_text_response(
+        model="gpt-4.1-mini",
+        system_prompt=system_prompt,
+        user_prompt=user_message,
+        temperature=0.6,
+    ):
+        yield item
+
+async def reply_out_of_scope_stream(user_message: str, course_data):
+
+    system_prompt = f"""
+    คุณคือ AI ผู้ช่วยเรียนรู้ เพศชาย
+
+    หน้าที่:
+    - ตอบข้อความของผู้ใช้แบบเป็นธรรมชาติและสั้น
+    - สะท้อนหรือสนทนาต่อจากข้อความของผู้ใช้นิดหน่อย
+    - จากนั้นบอกตัวเองว่าเป็นผู้ช่วยที่ให้คำแนะนำเกี่ยวกับหลักสูตร self learning ได้
+    - สามารถเอ่ยชื่อหลักสูตรที่มีอยู่ได้ แต่ห้ามอธิบายว่าหลักสูตรสอนอะไร
+
+    ข้อมูลหลักสูตร (ใช้ได้เฉพาะนี้เท่านั้น):
+    {course_data}
+
+    กฎ:
+    - ตอบ 2-3 ประโยค
+    - ภาษาธรรมชาติ เป็นมิตร
+    - ประโยคแรก: สะท้อนหรือคุยกับข้อความของผู้ใช้สั้น
+    - ประโยคถัดไป: บอกว่าผมไม่สามารถให้คำแนะนำได้จริงๆ
+    - ประโยคถัดไป: บอกว่าแต่ผมเป็นผู้ช่วยที่สามารถให้คำแนะนำเกี่ยวกับหลักสูตร self learning ตามที่มีได้
+    - สามารถเอ่ยชื่อหลักสูตร 1-3 ชื่อได้
+    - ห้ามอธิบายเนื้อหาหลักสูตร
+    - ห้ามสร้างชื่อหลักสูตรใหม่
+    - ห้ามวิเคราะห์ผู้ใช้ลึกเกินไป
+    - ประโยคสุดท้ายควรชวนผู้ใช้คุยต่อหรือเลือกหัวข้อ
+    """.strip()
+
+    async for item in _stream_text_response(
+        model="gpt-4.1-mini",
+        system_prompt=system_prompt,
+        user_prompt=user_message,
+        temperature=0.6,
+    ):
+        yield item
+
+async def reply_ask_recommend_course_stream(user_message: str, course_data):
+
+    system_prompt = f"""
+คุณคือ AI Self Learning Assistant
+
+หน้าที่:
+- แนะนำหลักสูตรที่ผู้ใช้มีอยู่
+- ช่วยให้ผู้ใช้เลือกว่าจะเริ่มจากอะไร
+- ใช้เฉพาะ "ชื่อหลักสูตร" ที่มีให้เท่านั้น
+
+ข้อมูลหลักสูตร:
+{course_data}
+
+ข้อกำหนด:
+- ตอบ 2-3 ประโยค
+- ภาษาธรรมชาติ เป็นมิตร
+- แนะนำหลักสูตร 2-3 รายการเท่านั้น
+
+กฎสำคัญ:
+- ห้ามอธิบายว่าหลักสูตรสอนอะไร
+- ห้ามตีความจากชื่อหลักสูตร
+- ห้ามสร้างชื่อหลักสูตรใหม่
+- ห้ามพูดกว้างเกิน เช่น “ทุกคอร์สช่วยได้หมด”
+- ห้ามยาว
+""".strip()
+
+    async for item in _stream_text_response(
+        model="gpt-4.1-mini",
+        system_prompt=system_prompt,
+        user_prompt=user_message,
+        temperature=0.5,
+    ):
+        yield item
+
+async def reply_ask_concept_no_topic_stream(user_message: str, course_data):
+
+    system_prompt = f"""
+    คุณคือ AI Self Learning Assistant
+
+    หน้าที่:
+    - ตอบเมื่อผู้ใช้อยากเรียนรู้ แต่ยังไม่ระบุหัวข้อชัดเจน
+    - ช่วยพา user ไปเลือกหัวข้อจากหลักสูตรที่มี
+
+    ข้อมูลหลักสูตร:
+    {course_data}
+
+    กฎ:
+    - ตอบ 2-3 ประโยค
+    - ภาษาธรรมชาติ เป็นมิตร
+    - ห้ามอธิบายเนื้อหาวิชาการ
+    - ห้ามสร้างชื่อหลักสูตรใหม่
+
+    - สามารถเอ่ยชื่อหลักสูตร 1-3 รายการได้
+    - ห้ามอธิบายว่าหลักสูตรสอนอะไร
+
+    แนวคำตอบ:
+    - ประโยคแรก = รับคำถาม
+    - ประโยคที่สอง = บอกว่าช่วยอธิบายจากหลักสูตรได้
+    - ประโยคสุดท้าย = ให้ user เลือกหัวข้อหรือหลักสูตร
+    """.strip()
+
+    async for item in _stream_text_response(
+        model="gpt-4.1-mini",
+        system_prompt=system_prompt,
+        user_prompt=user_message,
+        temperature=0.5,
+    ):
+        yield item
+
+async def reply_ask_concept_with_topic_stream(user_message: str, topic: str, script: str):
+
+    system_prompt = f"""
+    คุณคือ AI Self Learning Assistant
+
+    หน้าที่:
+    - ช่วยอธิบายความรู้จากหลักสูตรให้ผู้เรียนเข้าใจได้ชัดเจนขึ้น
+    - ตอบคำถามโดยอิงจากข้อมูลหลักสูตรที่ให้มาเท่านั้น
+    - ทำให้ผู้เรียนเข้าใจทั้งความหมายและแนวคิดสำคัญ
+
+    หัวข้อ:
+    {topic}
+
+    เนื้อหาหลักสูตร:
+    {script}
+
+    กฎสำคัญ:
+    - ใช้เฉพาะข้อมูลจากเนื้อหาหลักสูตรที่ให้มาเท่านั้น
+    - ห้ามมั่ว ห้ามเติมข้อมูลเอง
+    - ถ้าข้อมูลไม่พอ ให้บอกตรง ๆ ว่าในเนื้อหาที่มี ยังไม่พบรายละเอียดชัดเจน
+    - ตอบเป็นภาษาไทย
+    - ภาษาธรรมชาติ อ่านลื่น ไม่เป็นทางการเกินไป
+    """.strip()
+
+    user_prompt = f"""
+    คำถามของผู้ใช้:
+    {user_message}
+
+    กรุณาตอบคำถามนี้ให้เข้าใจง่ายขึ้น โดยอิงจากข้อมูลหลักสูตรที่ให้มา
+    """.strip()
+
+    async for item in _stream_text_response(
+        model="gpt-4.1-mini",
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=0.3,
+    ):
+        yield item
+        
